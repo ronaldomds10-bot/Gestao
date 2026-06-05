@@ -118,6 +118,18 @@ function isSchemaCompatibilityError(error: unknown) {
   return candidate.code === "PGRST204" || candidate.message?.includes("column") || false;
 }
 
+function isNoRowsError(error: unknown) {
+  if (typeof error !== "object" || error === null) return false;
+  const candidate = error as { code?: string; details?: string; message?: string };
+  return candidate.code === "PGRST116" || candidate.details?.includes("0 rows") || candidate.message?.includes("0 rows") || false;
+}
+
+function externalId(prefix: string, id: string, parts: Array<string | number | undefined | null>) {
+  if (id && !isUuid(id)) return id;
+  if (id && isUuid(id)) return `${prefix}:${id}`;
+  return `${prefix}:${parts.map((part) => String(part ?? "").trim()).join(":")}`;
+}
+
 function parseCpmInput(value: string | number | null | undefined) {
   const parsedValue = Number(String(value ?? "").trim().replace(/\s/g, "").replace(",", "."));
   if (!Number.isFinite(parsedValue)) return 0;
@@ -206,16 +218,55 @@ async function loadTable(table: TableName, userId: string) {
   return data ?? [];
 }
 
-async function upsertWithCompatibility<TPrimary extends Record<string, any>, TFallback extends Record<string, any>>(
+async function saveByIdOrExternalId<TPrimary extends Record<string, any>, TFallback extends Record<string, any>>(
   table: TableName,
   primaryPayload: TPrimary,
   fallbackPayload: TFallback,
+  recordId: string,
 ) {
   ensureOnline();
 
+  if (isUuid(recordId)) {
+    const { data, error } = await supabase
+      .from(table)
+      .update(primaryPayload as never)
+      .eq("id", recordId)
+      .eq("user_id", primaryPayload.user_id)
+      .select("id")
+      .single();
+
+    if (!error) {
+      return data.id as string;
+    }
+
+    if (!isSchemaCompatibilityError(error) && !isNoRowsError(error)) {
+      throw error;
+    }
+
+    if (isSchemaCompatibilityError(error)) {
+      const { data: fallbackData, error: fallbackError } = await supabase
+        .from(table)
+        .update(fallbackPayload as never)
+        .eq("id", recordId)
+        .eq("user_id", fallbackPayload.user_id)
+        .select("id")
+        .single();
+
+      if (!fallbackError) {
+        return fallbackData.id as string;
+      }
+
+      if (!isNoRowsError(fallbackError)) {
+        throw fallbackError;
+      }
+    }
+
+    recordId = "";
+  }
+
   const { data, error } = await supabase
     .from(table)
-    .upsert([primaryPayload as never])
+    .upsert([primaryPayload as never], { onConflict: "user_id,external_id" })
     .select("id")
     .single();
 
@@ -223,13 +274,9 @@ async function upsertWithCompatibility<TPrimary extends Record<string, any>, TFa
     return data.id as string;
   }
 
-  if (!isSchemaCompatibilityError(error)) {
-    throw error;
-  }
-
   const { data: fallbackData, error: fallbackError } = await supabase
     .from(table)
-    .upsert([fallbackPayload as never])
+    .upsert([fallbackPayload as never], { onConflict: "user_id,external_id" })
     .select("id")
     .single();
 
@@ -269,7 +316,7 @@ export async function loadUserDataFromSupabase(userId: string, fallbackClients: 
     client.cards.push({
       id: row.id,
       bank: row.bank ?? "",
-      cardName: row.name ?? row.card_name ?? "",
+      cardName: row.card_name ?? row.name ?? "",
       limitValue: Number(row.limit_value ?? 0),
       pointsBalance: Number(row.points_balance ?? 0),
       pointsPerDollar: Number(row.points_multiplier ?? row.points_per_dollar ?? 0),
@@ -288,7 +335,7 @@ export async function loadUserDataFromSupabase(userId: string, fallbackClients: 
     client.pointsPrograms.push({
       id: row.id,
       type: row.type ?? (getNotesText(row.notes, "tipo", "loyalty_points") as PointsProgram["type"]),
-      programName: row.name ?? row.program_name ?? "",
+      programName: row.program_name ?? row.name ?? "",
       balance: Number(row.balance ?? 0),
       cpm: parseCpmInput(row.cpm ?? getNotesNumber(row.notes, "cpm", 0.025)),
       expirationDate: row.expiration_date ?? "",
@@ -322,8 +369,8 @@ export async function loadUserDataFromSupabase(userId: string, fallbackClients: 
 
     client.transfers.push({
       id: row.id,
-      originProgramName: row.origin_program_name || origin?.name || origin?.program_name || getNotesText(row.notes, "origem", ""),
-      destinationProgramName: row.destination_program_name || destination?.airline || destination?.name || getNotesText(row.notes, "destino", ""),
+      originProgramName: row.origin_program || row.origin_program_name || origin?.name || origin?.program_name || getNotesText(row.notes, "origem", ""),
+      destinationProgramName: row.destination_program || row.destination_program_name || destination?.airline || destination?.name || getNotesText(row.notes, "destino", ""),
       sentAmount: Number(row.transferred_points ?? row.sent_amount ?? 0),
       bonusPercentage: Number(row.bonus_percentage ?? 0),
       date: row.transfer_date ?? "",
@@ -390,7 +437,16 @@ export async function saveClientToSupabase(userId: string, client: AppData) {
     joined_at: nullIfEmpty(profile.joinedAt),
   };
 
-  const id = await upsertWithCompatibility("clients", primaryPayload, primaryPayload);
+  ensureOnline();
+  const { data, error } = await supabase
+    .from("clients")
+    .upsert([primaryPayload as never])
+    .select("id")
+    .single();
+
+  if (error) throw error;
+
+  const id = data.id as string;
   return { ...client, id };
 }
 
@@ -399,31 +455,19 @@ export async function saveCardToSupabase(userId: string, clientId: string, card:
   const primaryPayload = {
     ...idPayload,
     user_id: userId,
-    client_id: clientId,
-    name: card.cardName,
+    external_id: externalId("card", card.id, [clientId, card.bank, card.cardName, card.dueDay]),
+    card_name: card.cardName,
     bank: card.bank,
     limit_value: card.limitValue,
     points_balance: Math.max(0, Math.round(card.pointsBalance)),
     due_day: card.dueDay,
-    points_multiplier: card.pointsPerDollar,
-    annual_fee: null,
-    brand: null,
-    last_four: null,
-    closing_day: null,
+    points_per_dollar: card.pointsPerDollar,
   };
   const fallbackPayload = {
-    ...idPayload,
-    user_id: userId,
-    client_id: clientId,
-    bank: card.bank,
-    card_name: card.cardName,
-    limit_value: card.limitValue,
-    points_balance: Math.max(0, Math.round(card.pointsBalance)),
-    points_per_dollar: card.pointsPerDollar,
-    due_day: card.dueDay,
+    ...primaryPayload,
   };
 
-  return { ...card, id: await upsertWithCompatibility("credit_cards", primaryPayload, fallbackPayload) };
+  return { ...card, id: await saveByIdOrExternalId("credit_cards", primaryPayload, fallbackPayload, card.id) };
 }
 
 export async function savePointsProgramToSupabase(userId: string, clientId: string, program: PointsProgram) {
@@ -431,26 +475,20 @@ export async function savePointsProgramToSupabase(userId: string, clientId: stri
   const primaryPayload = {
     ...idPayload,
     user_id: userId,
-    client_id: clientId,
-    type: program.type,
-    name: program.programName,
-    balance: Math.max(0, Math.round(program.balance)),
-    cpm: parseCpmInput(program.cpm),
-    expiration_date: nullIfEmpty(program.expirationDate),
-    notes: getPointsNotes(program),
-  };
-  const fallbackPayload = {
-    ...idPayload,
-    user_id: userId,
-    client_id: clientId,
+    external_id: externalId("points", program.id, [clientId, program.programName]),
     type: program.type,
     program_name: program.programName,
     balance: Math.max(0, Math.round(program.balance)),
     cpm: parseCpmInput(program.cpm),
     expiration_date: nullIfEmpty(program.expirationDate),
+    destination_program: null,
+    bonus_percentage: 0,
+  };
+  const fallbackPayload = {
+    ...primaryPayload,
   };
 
-  return { ...program, id: await upsertWithCompatibility("points_programs", primaryPayload, fallbackPayload) };
+  return { ...program, id: await saveByIdOrExternalId("points_programs", primaryPayload, fallbackPayload, program.id) };
 }
 
 export async function saveMilesProgramToSupabase(userId: string, clientId: string, program: MilesProgram) {
@@ -458,27 +496,17 @@ export async function saveMilesProgramToSupabase(userId: string, clientId: strin
   const primaryPayload = {
     ...idPayload,
     user_id: userId,
-    client_id: clientId,
-    name: program.airline,
+    external_id: externalId("miles", program.id, [clientId, program.airline]),
     airline: program.airline,
     balance: Math.max(0, Math.round(program.balance)),
     cpm: parseCpmInput(program.cpm),
-    bonus_percentage: program.bonusPercentage,
     expiration_date: nullIfEmpty(program.expirationDate),
-    notes: getMilesNotes(program),
   };
   const fallbackPayload = {
-    ...idPayload,
-    user_id: userId,
-    client_id: clientId,
-    airline: program.airline,
-    balance: Math.max(0, Math.round(program.balance)),
-    cpm: parseCpmInput(program.cpm),
-    bonus_percentage: program.bonusPercentage,
-    expiration_date: nullIfEmpty(program.expirationDate),
+    ...primaryPayload,
   };
 
-  return { ...program, id: await upsertWithCompatibility("miles_programs", primaryPayload, fallbackPayload) };
+  return { ...program, id: await saveByIdOrExternalId("miles_programs", primaryPayload, fallbackPayload, program.id) };
 }
 
 export async function saveTransferToSupabase(
@@ -494,32 +522,23 @@ export async function saveTransferToSupabase(
   const primaryPayload = {
     ...idPayload,
     user_id: userId,
-    client_id: clientId,
-    points_program_id: isUuid(originId ?? "") ? originId : null,
-    miles_program_id: isUuid(destinationId ?? "") ? destinationId : null,
-    origin_program_name: transfer.originProgramName,
-    destination_program_name: transfer.destinationProgramName,
-    transferred_points: Math.max(0, Math.round(transfer.sentAmount)),
-    bonus_percentage: transfer.bonusPercentage,
-    received_miles: getTransferFinalMiles(transfer),
-    transfer_date: nullIfEmpty(transfer.date),
-    status: "completed",
-    notes: getTransferNotes(transfer),
-  };
-  const fallbackPayload = {
-    ...idPayload,
-    user_id: userId,
-    client_id: clientId,
-    origin_program_id: isUuid(originId ?? "") ? originId : null,
-    destination_program_id: isUuid(destinationId ?? "") ? destinationId : null,
-    origin_program_name: transfer.originProgramName,
-    destination_program_name: transfer.destinationProgramName,
+    external_id: externalId("transfer", transfer.id, [clientId, transfer.originProgramName, transfer.destinationProgramName, transfer.date, transfer.sentAmount]),
+    origin_program: transfer.originProgramName,
+    destination_program: transfer.destinationProgramName,
     sent_amount: Math.max(0, Math.round(transfer.sentAmount)),
     bonus_percentage: transfer.bonusPercentage,
+    bonus_miles: Math.max(getTransferFinalMiles(transfer) - transfer.sentAmount, 0),
+    credited_miles: getTransferFinalMiles(transfer),
     transfer_date: nullIfEmpty(transfer.date),
+    generated_value: 0,
+  };
+  const fallbackPayload = {
+    ...primaryPayload,
   };
 
-  return { ...transfer, id: await upsertWithCompatibility("bonus_transfers", primaryPayload, fallbackPayload) };
+  void originId;
+  void destinationId;
+  return { ...transfer, id: await saveByIdOrExternalId("bonus_transfers", primaryPayload, fallbackPayload, transfer.id) };
 }
 
 export async function saveRedemptionToSupabase(userId: string, clientId: string, redemption: FlightRedemption) {
@@ -528,40 +547,23 @@ export async function saveRedemptionToSupabase(userId: string, clientId: string,
   const primaryPayload = {
     ...idPayload,
     user_id: userId,
-    client_id: isUuid(clientId) ? clientId : null,
+    external_id: externalId("redemption", redemption.id, [clientId, redemption.date, redemption.origin, redemption.destination, redemption.airline]),
     redemption_date: nullIfEmpty(redemption.date),
     origin: redemption.origin,
     destination: redemption.destination,
     airline: redemption.airline,
-    departure_date: nullIfEmpty(redemption.date),
-    return_date: null,
     miles_used: Math.max(0, Math.round(redemption.milesUsed)),
-    cash_cost: costs.totalCost,
-    taxes: costs.airportFee,
-    sale_price: redemption.regularPrice,
     regular_price: redemption.regularPrice,
-    paid_price: costs.totalCost,
     cpm: redemption.cpm ?? null,
     airport_fee: costs.airportFee,
-    status: "completed",
-    notes: getRedemptionNotes(redemption),
+    total_cost: costs.totalCost,
+    savings: costs.economy,
   };
   const fallbackPayload = {
-    ...idPayload,
-    user_id: userId,
-    client_id: clientId,
-    redemption_date: nullIfEmpty(redemption.date),
-    origin: redemption.origin,
-    destination: redemption.destination,
-    airline: redemption.airline,
-    regular_price: redemption.regularPrice,
-    paid_price: costs.totalCost,
-    miles_used: Math.max(0, Math.round(redemption.milesUsed)),
-    cpm: redemption.cpm ?? null,
-    airport_fee: costs.airportFee,
+    ...primaryPayload,
   };
 
-  return { ...redemption, id: await upsertWithCompatibility("flight_redemptions", primaryPayload, fallbackPayload) };
+  return { ...redemption, id: await saveByIdOrExternalId("flight_redemptions", primaryPayload, fallbackPayload, redemption.id) };
 }
 
 export async function saveGoalToSupabase(userId: string, clientId: string, goal: Goal) {
@@ -569,28 +571,17 @@ export async function saveGoalToSupabase(userId: string, clientId: string, goal:
   const primaryPayload = {
     ...idPayload,
     user_id: userId,
-    client_id: clientId,
+    external_id: externalId("goal", goal.id, [clientId, goal.title, goal.destination, goal.deadline]),
     title: goal.title,
     destination: goal.destination,
-    description: getGoalDescription(goal),
-    target_value: Math.max(0, Math.round(goal.requiredMiles)),
     required_miles: Math.max(0, Math.round(goal.requiredMiles)),
-    current_value: 0,
-    due_date: nullIfEmpty(goal.deadline),
     deadline: nullIfEmpty(goal.deadline),
-    status: "active",
   };
   const fallbackPayload = {
-    ...idPayload,
-    user_id: userId,
-    client_id: clientId,
-    title: goal.title,
-    destination: goal.destination,
-    required_miles: Math.max(0, Math.round(goal.requiredMiles)),
-    deadline: nullIfEmpty(goal.deadline),
+    ...primaryPayload,
   };
 
-  return { ...goal, id: await upsertWithCompatibility("goals", primaryPayload, fallbackPayload) };
+  return { ...goal, id: await saveByIdOrExternalId("goals", primaryPayload, fallbackPayload, goal.id) };
 }
 
 export async function deleteRecordFromSupabase(table: TableName, userId: string, recordId: string) {

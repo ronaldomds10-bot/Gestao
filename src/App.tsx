@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Area,
   AreaChart,
@@ -1419,6 +1419,7 @@ export default function App() {
   const [migrationError, setMigrationError] = useState("");
   const [isMigrating, setIsMigrating] = useState(false);
   const [autoMigrationMessage, setAutoMigrationMessage] = useState("");
+  const isSavingDataRef = useRef(false);
 
   const data = clients.find((client) => client.id === activeClientId) ?? clients[0] ?? initialData;
   const isAdmin = Boolean(session?.user.email && adminEmails.has(session.user.email));
@@ -1591,6 +1592,12 @@ export default function App() {
   }
 
   async function updateData(nextData: AppData) {
+    if (isSavingDataRef.current) {
+      return false;
+    }
+
+    isSavingDataRef.current = true;
+
     try {
       const previousData = data;
       const syncedData = await persistAppData(previousData, nextData);
@@ -1599,6 +1606,8 @@ export default function App() {
     } catch (error) {
       showSupabaseSaveError(error);
       return false;
+    } finally {
+      isSavingDataRef.current = false;
     }
   }
 
@@ -1717,6 +1726,11 @@ export default function App() {
 
   async function handleManualMigration() {
     if (!window.confirm("Migrar dados do localStorage para o Supabase agora? Esta acao pode recriar dados locais no banco.")) {
+      return;
+    }
+
+    const confirmation = window.prompt('Digite exatamente: "Tenho certeza que desejo migrar dados locais para Supabase"');
+    if (confirmation !== "Tenho certeza que desejo migrar dados locais para Supabase") {
       return;
     }
 
