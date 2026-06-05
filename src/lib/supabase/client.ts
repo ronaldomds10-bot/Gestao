@@ -6,11 +6,27 @@ import type { Database } from "../../services/supabaseTypes";
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
-if (!supabaseUrl || !supabaseAnonKey) {
-  console.warn("Supabase Vite environment variables are not configured yet.");
+function requireEnv(name: string, value: string | undefined) {
+  if (!value) {
+    throw new Error(`${name} is required. Configure it in your environment variables.`);
+  }
+
+  return value;
+}
+
+function requireUrl(name: string, value: string | undefined) {
+  const url = requireEnv(name, value);
+
+  try {
+    new URL(url);
+  } catch {
+    throw new Error(`${name} must be a valid URL.`);
+  }
+
+  return url;
 }
 
 export const supabase = createClient<Database>(
-  supabaseUrl ?? "",
-  supabaseAnonKey ?? "",
+  requireUrl("VITE_SUPABASE_URL", supabaseUrl),
+  requireEnv("VITE_SUPABASE_ANON_KEY", supabaseAnonKey),
 );

@@ -28,6 +28,8 @@ import {
   User,
   WalletCards,
 } from "lucide-react";
+import { supabase } from "./lib/supabase/client";
+import type { Session } from "@supabase/supabase-js";
 
 type MilesProgram = {
   id: string;
@@ -454,15 +456,55 @@ function createEmptyClient(): AppData {
 }
 
 export default function App() {
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [session, setSession] = useState<Session | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
   const [activeSection, setActiveSection] = useState<Section>("dashboard");
-  const [clients, setClients] = useState<AppData[]>(() => loadData());
-  const [activeClientId, setActiveClientId] = useState(() => {
-    const loadedClients = loadData();
-    return loadedClients[0]?.id ?? initialData.id;
-  });
+  const [clients, setClients] = useState<AppData[]>([]);
+  const [activeClientId, setActiveClientId] = useState("");
 
   const data = clients.find((client) => client.id === activeClientId) ?? clients[0] ?? initialData;
+
+  function hydrateLocalData() {
+    const loadedClients = loadData();
+    setClients(loadedClients);
+    setActiveClientId((currentClientId) =>
+      currentClientId && loadedClients.some((client) => client.id === currentClientId)
+        ? currentClientId
+        : loadedClients[0]?.id ?? initialData.id,
+    );
+  }
+
+  useEffect(() => {
+    let mounted = true;
+
+    supabase.auth.getSession().then(({ data: { session: currentSession } }) => {
+      if (!mounted) return;
+      setSession(currentSession);
+      if (currentSession) {
+        hydrateLocalData();
+      }
+      setAuthLoading(false);
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession);
+      if (nextSession) {
+        hydrateLocalData();
+        return;
+      }
+
+      setClients([]);
+      setActiveClientId("");
+      setActiveSection("dashboard");
+    });
+
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
+  }, []);
 
   function updateClients(nextClients: AppData[]) {
     setClients(nextClients);
@@ -494,8 +536,25 @@ export default function App() {
     }
   }
 
-  if (!isAuthenticated) {
-    return <LoginPage onLogin={() => setIsAuthenticated(true)} />;
+  async function handleLogin(email: string, password: string) {
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    return !error;
+  }
+
+  async function handleLogout() {
+    await supabase.auth.signOut();
+  }
+
+  if (authLoading) {
+    return (
+      <div className="grid min-h-screen place-items-center bg-[#071529] px-4 py-10 text-white">
+        <BrandInline />
+      </div>
+    );
+  }
+
+  if (!session) {
+    return <LoginPage onLogin={handleLogin} />;
   }
 
   return (
@@ -556,7 +615,7 @@ export default function App() {
               </button>
               <button
                 className="inline-flex items-center gap-2 rounded-md border border-[#3B5B82] bg-[#233B5D] px-3 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-[#314863]"
-                onClick={() => setIsAuthenticated(false)}
+                onClick={handleLogout}
               >
                 <LogOut size={16} />
                 Sair
@@ -604,7 +663,12 @@ export default function App() {
   );
 }
 
-function LoginPage({ onLogin }: { onLogin: () => void }) {
+function LoginPage({ onLogin }: { onLogin: (email: string, password: string) => Promise<boolean> }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [errorMessage, setErrorMessage] = useState("");
+
   return (
     <div className="grid min-h-screen place-items-center bg-[#071529] px-4 py-10">
       <div className="w-full max-w-md rounded-xl border border-[#1E3A5F] bg-[#0F1F38] p-8 shadow-2xl shadow-black/30">
@@ -618,15 +682,22 @@ function LoginPage({ onLogin }: { onLogin: () => void }) {
         </div>
         <form
           className="mt-6 space-y-4"
-          onSubmit={(event) => {
+          onSubmit={async (event) => {
             event.preventDefault();
-            onLogin();
+            setErrorMessage("");
+            setIsSubmitting(true);
+            const authenticated = await onLogin(email, password);
+            setIsSubmitting(false);
+            if (!authenticated) {
+              setErrorMessage("E-mail ou senha inválidos.");
+            }
           }}
         >
-          <Field label="Email" type="email" defaultValue="cliente@rmpartiu.com.br" />
-          <Field label="Senha" type="password" defaultValue="123456" />
-          <button className="w-full rounded-md bg-[#A855F7] px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-[#A855F7]/20 transition hover:bg-[#9333EA]">
-            Entrar
+          <Field label="Email" type="email" value={email} autoComplete="email" onChange={(event) => setEmail(event.currentTarget.value)} />
+          <Field label="Senha" type="password" value={password} autoComplete="current-password" onChange={(event) => setPassword(event.currentTarget.value)} />
+          {errorMessage && <p className="text-sm font-medium text-red-300">{errorMessage}</p>}
+          <button disabled={isSubmitting} className="w-full rounded-md bg-[#A855F7] px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-[#A855F7]/20 transition hover:bg-[#9333EA] disabled:cursor-not-allowed disabled:opacity-70">
+            {isSubmitting ? "Entrando..." : "Entrar"}
           </button>
           <button type="button" className="w-full rounded-md px-4 py-3 text-sm font-semibold text-[#CBD5E1] transition hover:bg-[#233B5D]">
             Recuperar senha
