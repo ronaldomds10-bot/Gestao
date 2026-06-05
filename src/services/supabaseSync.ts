@@ -597,7 +597,7 @@ export async function deleteRecordFromSupabase(table: TableName, userId: string,
   ensureOnline();
 
   if (!isUuid(recordId)) {
-    return;
+    throw new SupabaseSyncError("Registro sem id real do Supabase. A exclusao nao foi executada.");
   }
 
   const { error } = await supabase

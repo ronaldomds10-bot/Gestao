@@ -1438,46 +1438,13 @@ export default function App() {
 
   async function hydrateProfileClients(userId: string) {
     try {
-      const localClients = getLocalStorageClientsForMigration();
-      const fallbackClients = localClients.length > 0 ? localClients : [createEmptyClient()];
-      const remote = await loadUserDataFromSupabase(userId, fallbackClients);
-
-      if (!remote.hasRemoteData && localClients.length > 0) {
-        await migrateLocalCacheToSupabase(userId, localClients);
-        const migratedRemote = await loadUserDataFromSupabase(userId, fallbackClients);
-        setLoadedClients(migratedRemote.clients);
-        saveData(migratedRemote.clients);
-        return;
-      }
-
-      setLoadedClients(remote.clients);
-      saveData(remote.clients);
+      const remote = await loadUserDataFromSupabase(userId);
+      const loadedClients = remote.clients.length > 0 ? remote.clients : [createEmptyClient()];
+      setLoadedClients(loadedClients);
+      saveData(loadedClients);
     } catch (error) {
       console.error("Nao foi possivel carregar perfil/clientes do Supabase. Usando localStorage como fallback.", error);
       hydrateLocalData();
-    }
-  }
-
-  async function runAutomaticLocalStorageMigration(userId: string) {
-    if (!hasLocalStorageDataForSupabaseMigration()) {
-      return;
-    }
-
-    try {
-      const localClients = getLocalStorageClientsForMigration();
-      const remote = await loadUserDataFromSupabase(userId, localClients);
-
-      if (!remote.hasRemoteData && localClients.length > 0) {
-        await migrateLocalCacheToSupabase(userId, localClients);
-      }
-
-      if (!hasSupabaseMigrationFlag()) {
-        setSupabaseMigrationFlag();
-        setAutoMigrationMessage("Dados locais sincronizados com segurança.");
-        window.setTimeout(() => setAutoMigrationMessage(""), 5000);
-      }
-    } catch (error) {
-      console.error("Falha na migracao automatica do localStorage para o Supabase.", error);
     }
   }
 
@@ -1499,7 +1466,6 @@ export default function App() {
 
         if (user) {
           await ensureUserProfile(user);
-          await runAutomaticLocalStorageMigration(user.id);
           await hydrateProfileClients(user.id);
         }
 
@@ -1524,7 +1490,6 @@ export default function App() {
 
         if (user) {
           await ensureUserProfile(user);
-          await runAutomaticLocalStorageMigration(user.id);
           await hydrateProfileClients(user.id);
         }
 
@@ -1741,7 +1706,6 @@ export default function App() {
 
     if (user) {
       await ensureUserProfile(user);
-      await runAutomaticLocalStorageMigration(user.id);
     }
 
     return true;
@@ -1752,6 +1716,10 @@ export default function App() {
   }
 
   async function handleManualMigration() {
+    if (!window.confirm("Migrar dados do localStorage para o Supabase agora? Esta acao pode recriar dados locais no banco.")) {
+      return;
+    }
+
     setMigrationError("");
     setMigrationSummary(null);
     setIsMigrating(true);
