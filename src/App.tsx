@@ -31,83 +31,25 @@ import {
 import { supabase } from "./lib/supabase/client";
 import { ensureUserProfile } from "./lib/supabase/ensureUserProfile";
 import type { Session } from "@supabase/supabase-js";
-
-type MilesProgram = {
-  id: string;
-  airline: string;
-  balance: number;
-  cpm: number;
-  bonusPercentage: number;
-  expirationDate: string;
-};
-
-type PointsProgram = {
-  id: string;
-  type: "loyalty_points" | "bank_points";
-  programName: string;
-  balance: number;
-  cpm: number;
-  expirationDate: string;
-};
-
-type BonusTransfer = {
-  id: string;
-  originProgramName: string;
-  destinationProgramName: string;
-  sentAmount: number;
-  bonusPercentage: number;
-  date: string;
-};
-
-type CreditCardRecord = {
-  id: string;
-  bank: string;
-  cardName: string;
-  limitValue: number;
-  pointsBalance: number;
-  pointsPerDollar: number;
-  dueDay: number;
-};
-
-type FlightRedemption = {
-  id: string;
-  date: string;
-  origin: string;
-  destination: string;
-  airline: string;
-  regularPrice: number;
-  paidPrice: number;
-  milesUsed: number;
-  cpm?: number;
-  airportFee?: number;
-};
-
-type Goal = {
-  id: string;
-  title: string;
-  destination: string;
-  requiredMiles: number;
-  deadline: string;
-};
-
-type Profile = {
-  name: string;
-  email: string;
-  phone: string;
-  joinedAt: string;
-  plan: string;
-};
-
-type AppData = {
-  id: string;
-  cards: CreditCardRecord[];
-  milesPrograms: MilesProgram[];
-  pointsPrograms: PointsProgram[];
-  transfers: BonusTransfer[];
-  redemptions: FlightRedemption[];
-  goals: Goal[];
-  profile: Profile;
-};
+import {
+  deleteRecordFromSupabase,
+  loadUserDataFromSupabase,
+  saveCardToSupabase,
+  saveClientToSupabase,
+  saveGoalToSupabase,
+  saveMilesProgramToSupabase,
+  savePointsProgramToSupabase,
+  saveRedemptionToSupabase,
+  saveTransferToSupabase,
+  type AppData,
+  type BonusTransfer,
+  type CreditCardRecord,
+  type FlightRedemption,
+  type Goal,
+  type MilesProgram,
+  type PointsProgram,
+  type Profile,
+} from "./services/supabaseSync";
 
 type MigrationSummary = {
   cards: number;
@@ -519,13 +461,112 @@ async function loadProfileClientsFromSupabase(userId: string) {
     return fallbackClients;
   }
 
-  return supabaseClients.map((client, index) => {
+  const profileClients = supabaseClients.map((client, index) => {
     const sourceId = getSourceIdFromNotes(client.notes);
     const matchingFallback = sourceId
       ? fallbackClients.find((localClient) => localClient.id === sourceId)
       : undefined;
     return mapSupabaseClientToAppData(client, matchingFallback ?? fallbackClients[index] ?? createEmptyClient());
   });
+
+  return loadMileageAndPointsFromSupabase(userId, profileClients);
+}
+
+async function loadMileageAndPointsFromSupabase(userId: string, baseClients: AppData[]) {
+  const [pointsResult, milesResult, transfersResult] = await Promise.all([
+    supabase
+      .from("points_programs")
+      .select("*")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: true }),
+    supabase
+      .from("miles_programs")
+      .select("*")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: true }),
+    supabase
+      .from("bonus_transfers")
+      .select("*")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: true }),
+  ]);
+
+  if (pointsResult.error) throw pointsResult.error;
+  if (milesResult.error) throw milesResult.error;
+  if (transfersResult.error) throw transfersResult.error;
+
+  const pointsRows = pointsResult.data ?? [];
+  const milesRows = milesResult.data ?? [];
+  const transferRows = transfersResult.data ?? [];
+  const hasSupabaseMileageData = pointsRows.length > 0 || milesRows.length > 0 || transferRows.length > 0;
+
+  if (!hasSupabaseMileageData) {
+    return baseClients;
+  }
+
+  const pointsById = new Map(pointsRows.map((row) => [row.id, row]));
+  const milesById = new Map(milesRows.map((row) => [row.id, row]));
+
+  const pointsPrograms: PointsProgram[] = pointsRows.map((row) => {
+    const rawRow = row as typeof row & { type?: PointsProgram["type"]; cpm?: number; program_name?: string };
+    return {
+      id: row.id,
+      type: rawRow.type ?? (getNotesText(row.notes, "tipo", "loyalty_points") as PointsProgram["type"]),
+      programName: row.name || rawRow.program_name || "",
+      balance: Number(row.balance ?? 0),
+      cpm: parseCpmInput(rawRow.cpm ?? getNotesNumber(row.notes, "cpm", 0.025)),
+      expirationDate: row.expiration_date ?? "",
+    };
+  });
+
+  const milesPrograms: MilesProgram[] = milesRows.map((row) => {
+    const rawRow = row as typeof row & { cpm?: number; bonus_percentage?: number };
+    const airline = row.airline || row.name;
+    return {
+      id: row.id,
+      airline,
+      balance: Number(row.balance ?? 0),
+      cpm: parseCpmInput(rawRow.cpm ?? getNotesNumber(row.notes, "cpm", airlineDefaultCpm[airline] ?? 0.04)),
+      bonusPercentage: Number(rawRow.bonus_percentage ?? getNotesNumber(row.notes, "bonus", 0)),
+      expirationDate: row.expiration_date ?? "",
+    };
+  });
+
+  const transfers: BonusTransfer[] = transferRows.map((row) => {
+    const rawRow = row as typeof row & {
+      origin_program_name?: string | null;
+      destination_program_name?: string | null;
+      origin_program_id?: string | null;
+      destination_program_id?: string | null;
+      sent_amount?: number | null;
+      transfer_date?: string | null;
+    };
+    const originProgramId = row.points_program_id ?? rawRow.origin_program_id;
+    const destinationProgramId = row.miles_program_id ?? rawRow.destination_program_id;
+    const originProgram = originProgramId ? pointsById.get(originProgramId) : undefined;
+    const destinationProgram = destinationProgramId ? milesById.get(destinationProgramId) : undefined;
+    const rawOriginProgram = originProgram as typeof originProgram & { program_name?: string } | undefined;
+
+    return {
+      id: row.id,
+      originProgramName: rawRow.origin_program_name || originProgram?.name || rawOriginProgram?.program_name || getNotesText(row.notes, "origem", ""),
+      destinationProgramName: rawRow.destination_program_name || destinationProgram?.airline || destinationProgram?.name || getNotesText(row.notes, "destino", ""),
+      sentAmount: Number(row.transferred_points ?? rawRow.sent_amount ?? 0),
+      bonusPercentage: Number(row.bonus_percentage ?? 0),
+      date: rawRow.transfer_date ?? row.transfer_date ?? "",
+    };
+  });
+
+  const [firstClient, ...remainingClients] = baseClients.length > 0 ? baseClients : [createEmptyClient()];
+  return [
+    {
+      ...firstClient,
+      pointsPrograms,
+      milesPrograms,
+      transfers,
+    },
+    ...remainingClients,
+  ];
 }
 
 function getLocalStorageClientsForMigration() {
@@ -554,16 +595,52 @@ function setSupabaseMigrationFlag() {
   localStorage.setItem(supabaseMigrationFlagKey, "true");
 }
 
+function showSupabaseSaveError(error: unknown) {
+  console.error("Nao foi possivel salvar no Supabase.", error);
+  window.alert("Nao foi possivel salvar no Supabase. Verifique sua conexao e tente novamente.");
+}
+
 function nullIfEmpty(value: string | undefined) {
   return value?.trim() ? value : null;
 }
 
 function getMigrationNotes(sourceId: string, details?: string) {
-  return `Migrado do localStorage: ${sourceId}`;
+  return `Migrado do localStorage: ${sourceId}${details ? `; ${details}` : ""}`;
+}
+
+function getNotesNumber(notes: string | null | undefined, key: string, fallback: number) {
+  const match = notes?.match(new RegExp(`${key}:\\s*([^;]+)`));
+  return match ? parseCpmInput(match[1]) : fallback;
+}
+
+function getNotesText(notes: string | null | undefined, key: string, fallback: string) {
+  const match = notes?.match(new RegExp(`${key}:\\s*([^;]+)`));
+  return match?.[1]?.trim() || fallback;
+}
+
+function getPointsProgramNotes(program: PointsProgram) {
+  return getMigrationNotes(program.id, `tipo: ${program.type}; cpm: ${parseCpmInput(program.cpm)}`);
+}
+
+function getMilesProgramNotes(program: MilesProgram) {
+  return getMigrationNotes(program.id, `cpm: ${parseCpmInput(program.cpm)}; bonus: ${program.bonusPercentage}`);
+}
+
+function getTransferNotes(transfer: BonusTransfer) {
+  return getMigrationNotes(
+    transfer.id,
+    `origem: ${transfer.originProgramName}; destino: ${transfer.destinationProgramName}`,
+  );
 }
 
 function isDuplicateError(error: unknown) {
   return typeof error === "object" && error !== null && "code" in error && error.code === "23505";
+}
+
+function isSchemaCompatibilityError(error: unknown) {
+  if (typeof error !== "object" || error === null) return false;
+  const candidate = error as { code?: string; message?: string };
+  return candidate.code === "PGRST204" || candidate.message?.includes("column") || false;
 }
 
 async function ensureMigratedClient(userId: string, localClient: AppData, index: number) {
@@ -964,6 +1041,325 @@ async function migrateLocalStorageToSupabase() {
   return summary;
 }
 
+async function migrateLocalMileageAndPointsToSupabase() {
+  const {
+    data: { user },
+    error: userError,
+  } = await supabase.auth.getUser();
+
+  if (userError || !user) {
+    throw userError ?? new Error("Usuario autenticado nao encontrado.");
+  }
+
+  const localClients = getLocalStorageClientsForMigration();
+  const summary: MigrationSummary = {
+    cards: 0,
+    pointsPrograms: 0,
+    milesPrograms: 0,
+    transfers: 0,
+    redemptions: 0,
+    goals: 0,
+  };
+
+  await ensureUserProfile(user);
+
+  for (const [clientIndex, localClient] of localClients.entries()) {
+    await ensureMigratedClient(user.id, localClient, clientIndex);
+    const pointsProgramIds = new Map<string, string>();
+    const milesProgramIds = new Map<string, string>();
+
+    for (const program of localClient.pointsPrograms) {
+      const result = await ensureMigratedPointsProgram(user.id, program);
+      if (result.id) {
+        pointsProgramIds.set(program.programName, result.id);
+      }
+      if (result.inserted) {
+        summary.pointsPrograms += 1;
+      }
+    }
+
+    for (const program of localClient.milesPrograms) {
+      const result = await ensureMigratedMilesProgram(user.id, program);
+      if (result.id) {
+        milesProgramIds.set(program.airline, result.id);
+      }
+      if (result.inserted) {
+        summary.milesPrograms += 1;
+      }
+    }
+
+    for (const transfer of localClient.transfers) {
+      const receivedMiles = getTransferFinalMiles(transfer);
+      const notes = getTransferNotes(transfer);
+      const { data: existingTransfer, error: transferSelectError } = await supabase
+        .from("bonus_transfers")
+        .select("id")
+        .eq("user_id", user.id)
+        .eq("notes", notes)
+        .limit(1)
+        .maybeSingle();
+
+      if (transferSelectError) {
+        throw transferSelectError;
+      }
+
+      if (!existingTransfer) {
+        const { error: transferInsertError } = await supabase.from("bonus_transfers").insert([
+          {
+            user_id: user.id,
+            points_program_id: pointsProgramIds.get(transfer.originProgramName) ?? null,
+            miles_program_id: milesProgramIds.get(transfer.destinationProgramName) ?? null,
+            transferred_points: Math.max(0, Math.round(transfer.sentAmount)),
+            bonus_percentage: transfer.bonusPercentage,
+            received_miles: receivedMiles,
+            transfer_date: nullIfEmpty(transfer.date),
+            status: "completed",
+            notes,
+          },
+        ]);
+
+        if (transferInsertError && !isDuplicateError(transferInsertError)) {
+          throw transferInsertError;
+        }
+
+        if (!transferInsertError) {
+          summary.transfers += 1;
+        }
+      }
+    }
+  }
+
+  return summary;
+}
+
+async function migrateLocalCacheToSupabase(userId: string, localClients: AppData[]) {
+  const summary: MigrationSummary = {
+    cards: 0,
+    pointsPrograms: 0,
+    milesPrograms: 0,
+    transfers: 0,
+    redemptions: 0,
+    goals: 0,
+  };
+
+  for (const localClient of localClients) {
+    const savedClient = await saveClientToSupabase(userId, localClient);
+    const savedPoints: PointsProgram[] = [];
+    const savedMiles: MilesProgram[] = [];
+
+    for (const card of localClient.cards) {
+      await saveCardToSupabase(userId, savedClient.id, card);
+      summary.cards += 1;
+    }
+
+    for (const program of localClient.pointsPrograms) {
+      savedPoints.push(await savePointsProgramToSupabase(userId, savedClient.id, program));
+      summary.pointsPrograms += 1;
+    }
+
+    for (const program of localClient.milesPrograms) {
+      savedMiles.push(await saveMilesProgramToSupabase(userId, savedClient.id, program));
+      summary.milesPrograms += 1;
+    }
+
+    for (const transfer of localClient.transfers) {
+      await saveTransferToSupabase(userId, savedClient.id, transfer, savedPoints, savedMiles);
+      summary.transfers += 1;
+    }
+
+    for (const redemption of localClient.redemptions) {
+      await saveRedemptionToSupabase(userId, savedClient.id, redemption);
+      summary.redemptions += 1;
+    }
+
+    for (const goal of localClient.goals) {
+      await saveGoalToSupabase(userId, savedClient.id, goal);
+      summary.goals += 1;
+    }
+  }
+
+  return summary;
+}
+
+async function saveMileageAndPointsToSupabase(userId: string, previousData: AppData, nextData: AppData) {
+  const removedTransferIds = previousData.transfers
+    .filter((previousTransfer) => !nextData.transfers.some((transfer) => transfer.id === previousTransfer.id))
+    .map((transfer) => transfer.id)
+    .filter(isUuid);
+  const removedPointsIds = previousData.pointsPrograms
+    .filter((previousProgram) => !nextData.pointsPrograms.some((program) => program.id === previousProgram.id))
+    .map((program) => program.id)
+    .filter(isUuid);
+  const removedMilesIds = previousData.milesPrograms
+    .filter((previousProgram) => !nextData.milesPrograms.some((program) => program.id === previousProgram.id))
+    .map((program) => program.id)
+    .filter(isUuid);
+
+  if (removedTransferIds.length > 0) {
+    const { error } = await supabase
+      .from("bonus_transfers")
+      .delete()
+      .eq("user_id", userId)
+      .in("id", removedTransferIds);
+    if (error) throw error;
+  }
+
+  if (removedPointsIds.length > 0) {
+    const { error } = await supabase
+      .from("points_programs")
+      .delete()
+      .eq("user_id", userId)
+      .in("id", removedPointsIds);
+    if (error) throw error;
+  }
+
+  if (removedMilesIds.length > 0) {
+    const { error } = await supabase
+      .from("miles_programs")
+      .delete()
+      .eq("user_id", userId)
+      .in("id", removedMilesIds);
+    if (error) throw error;
+  }
+
+  const pointsIdByName = new Map<string, string>();
+  const milesIdByName = new Map<string, string>();
+
+  for (const program of nextData.pointsPrograms) {
+    const payload = {
+      ...(isUuid(program.id) ? { id: program.id } : {}),
+      user_id: userId,
+      name: program.programName,
+      balance: Math.max(0, Math.round(program.balance)),
+      expiration_date: nullIfEmpty(program.expirationDate),
+      notes: getPointsProgramNotes(program),
+    };
+    const { data: savedProgram, error } = await supabase
+      .from("points_programs")
+      .upsert([payload as never])
+      .select("id")
+      .single();
+
+    if (error && !isSchemaCompatibilityError(error)) throw error;
+
+    if (error) {
+      const fallbackPayload = {
+        ...(isUuid(program.id) ? { id: program.id } : {}),
+        user_id: userId,
+        client_id: nextData.id,
+        type: program.type,
+        program_name: program.programName,
+        balance: Math.max(0, Math.round(program.balance)),
+        cpm: parseCpmInput(program.cpm),
+        expiration_date: nullIfEmpty(program.expirationDate),
+      };
+      const { data: fallbackSavedProgram, error: fallbackError } = await supabase
+        .from("points_programs")
+        .upsert([fallbackPayload as never])
+        .select("id")
+        .single();
+
+      if (fallbackError) throw fallbackError;
+      pointsIdByName.set(program.programName, fallbackSavedProgram.id);
+      program.id = fallbackSavedProgram.id;
+    } else {
+      pointsIdByName.set(program.programName, savedProgram.id);
+      program.id = savedProgram.id;
+    }
+  }
+
+  for (const program of nextData.milesPrograms) {
+    const payload = {
+      ...(isUuid(program.id) ? { id: program.id } : {}),
+      user_id: userId,
+      name: program.airline,
+      airline: program.airline,
+      balance: Math.max(0, Math.round(program.balance)),
+      expiration_date: nullIfEmpty(program.expirationDate),
+      notes: getMilesProgramNotes(program),
+    };
+    const { data: savedProgram, error } = await supabase
+      .from("miles_programs")
+      .upsert([payload as never])
+      .select("id")
+      .single();
+
+    if (error && !isSchemaCompatibilityError(error)) throw error;
+
+    if (error) {
+      const fallbackPayload = {
+        ...(isUuid(program.id) ? { id: program.id } : {}),
+        user_id: userId,
+        client_id: nextData.id,
+        airline: program.airline,
+        balance: Math.max(0, Math.round(program.balance)),
+        cpm: parseCpmInput(program.cpm),
+        bonus_percentage: program.bonusPercentage,
+        expiration_date: nullIfEmpty(program.expirationDate),
+      };
+      const { data: fallbackSavedProgram, error: fallbackError } = await supabase
+        .from("miles_programs")
+        .upsert([fallbackPayload as never])
+        .select("id")
+        .single();
+
+      if (fallbackError) throw fallbackError;
+      milesIdByName.set(program.airline, fallbackSavedProgram.id);
+      program.id = fallbackSavedProgram.id;
+    } else {
+      milesIdByName.set(program.airline, savedProgram.id);
+      program.id = savedProgram.id;
+    }
+  }
+
+  for (const transfer of nextData.transfers) {
+    const payload = {
+      ...(isUuid(transfer.id) ? { id: transfer.id } : {}),
+      user_id: userId,
+      points_program_id: pointsIdByName.get(transfer.originProgramName) ?? null,
+      miles_program_id: milesIdByName.get(transfer.destinationProgramName) ?? null,
+      transferred_points: Math.max(0, Math.round(transfer.sentAmount)),
+      bonus_percentage: transfer.bonusPercentage,
+      received_miles: getTransferFinalMiles(transfer),
+      transfer_date: nullIfEmpty(transfer.date),
+      status: "completed",
+      notes: getTransferNotes(transfer),
+    };
+    const { data: savedTransfer, error } = await supabase
+      .from("bonus_transfers")
+      .upsert([payload as never])
+      .select("id")
+      .single();
+
+    if (error && !isSchemaCompatibilityError(error)) throw error;
+
+    if (error) {
+      const fallbackPayload = {
+        ...(isUuid(transfer.id) ? { id: transfer.id } : {}),
+        user_id: userId,
+        client_id: nextData.id,
+        origin_program_id: pointsIdByName.get(transfer.originProgramName) ?? null,
+        destination_program_id: milesIdByName.get(transfer.destinationProgramName) ?? null,
+        origin_program_name: transfer.originProgramName,
+        destination_program_name: transfer.destinationProgramName,
+        sent_amount: Math.max(0, Math.round(transfer.sentAmount)),
+        bonus_percentage: transfer.bonusPercentage,
+        transfer_date: nullIfEmpty(transfer.date),
+      };
+      const { data: fallbackSavedTransfer, error: fallbackError } = await supabase
+        .from("bonus_transfers")
+        .upsert([fallbackPayload as never])
+        .select("id")
+        .single();
+
+      if (fallbackError) throw fallbackError;
+      transfer.id = fallbackSavedTransfer.id;
+    } else {
+      transfer.id = savedTransfer.id;
+    }
+  }
+}
+
 async function hasExistingSupabaseAppData(userId: string) {
   const tables = [
     "credit_cards",
@@ -973,6 +1369,27 @@ async function hasExistingSupabaseAppData(userId: string) {
     "flight_redemptions",
     "goals",
   ] as const;
+
+  for (const table of tables) {
+    const { count, error } = await supabase
+      .from(table)
+      .select("id", { count: "exact", head: true })
+      .eq("user_id", userId);
+
+    if (error) {
+      throw error;
+    }
+
+    if ((count ?? 0) > 0) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+async function hasExistingSupabaseMileageData(userId: string) {
+  const tables = ["points_programs", "miles_programs", "bonus_transfers"] as const;
 
   for (const table of tables) {
     const { count, error } = await supabase
@@ -1021,9 +1438,20 @@ export default function App() {
 
   async function hydrateProfileClients(userId: string) {
     try {
-      const loadedClients = await loadProfileClientsFromSupabase(userId);
-      setLoadedClients(loadedClients);
-      saveData(loadedClients);
+      const localClients = getLocalStorageClientsForMigration();
+      const fallbackClients = localClients.length > 0 ? localClients : [createEmptyClient()];
+      const remote = await loadUserDataFromSupabase(userId, fallbackClients);
+
+      if (!remote.hasRemoteData && localClients.length > 0) {
+        await migrateLocalCacheToSupabase(userId, localClients);
+        const migratedRemote = await loadUserDataFromSupabase(userId, fallbackClients);
+        setLoadedClients(migratedRemote.clients);
+        saveData(migratedRemote.clients);
+        return;
+      }
+
+      setLoadedClients(remote.clients);
+      saveData(remote.clients);
     } catch (error) {
       console.error("Nao foi possivel carregar perfil/clientes do Supabase. Usando localStorage como fallback.", error);
       hydrateLocalData();
@@ -1031,20 +1459,23 @@ export default function App() {
   }
 
   async function runAutomaticLocalStorageMigration(userId: string) {
-    if (!hasLocalStorageDataForSupabaseMigration() || hasSupabaseMigrationFlag()) {
+    if (!hasLocalStorageDataForSupabaseMigration()) {
       return;
     }
 
     try {
-      const hasExistingData = await hasExistingSupabaseAppData(userId);
+      const localClients = getLocalStorageClientsForMigration();
+      const remote = await loadUserDataFromSupabase(userId, localClients);
 
-      if (!hasExistingData) {
-        await migrateLocalStorageToSupabase();
+      if (!remote.hasRemoteData && localClients.length > 0) {
+        await migrateLocalCacheToSupabase(userId, localClients);
       }
 
-      setSupabaseMigrationFlag();
-      setAutoMigrationMessage("Dados locais sincronizados com segurança.");
-      window.setTimeout(() => setAutoMigrationMessage(""), 5000);
+      if (!hasSupabaseMigrationFlag()) {
+        setSupabaseMigrationFlag();
+        setAutoMigrationMessage("Dados locais sincronizados com segurança.");
+        window.setTimeout(() => setAutoMigrationMessage(""), 5000);
+      }
     } catch (error) {
       console.error("Falha na migracao automatica do localStorage para o Supabase.", error);
     }
@@ -1117,104 +1548,142 @@ export default function App() {
     saveData(nextClients);
   }
 
-  function updateData(nextData: AppData) {
-    updateClients(clients.map((client) => (client.id === nextData.id ? nextData : client)));
+  async function getAuthenticatedUserId() {
+    const {
+      data: { user },
+      error,
+    } = await supabase.auth.getUser();
+
+    if (error || !user) {
+      throw error ?? new Error("Usuario autenticado nao encontrado.");
+    }
+
+    return user.id;
+  }
+
+  async function persistAppData(previousData: AppData, nextData: AppData) {
+    const userId = await getAuthenticatedUserId();
+
+    const removedTransfers = previousData.transfers.filter((item) => !nextData.transfers.some((nextItem) => nextItem.id === item.id));
+    const removedCards = previousData.cards.filter((item) => !nextData.cards.some((nextItem) => nextItem.id === item.id));
+    const removedRedemptions = previousData.redemptions.filter((item) => !nextData.redemptions.some((nextItem) => nextItem.id === item.id));
+    const removedGoals = previousData.goals.filter((item) => !nextData.goals.some((nextItem) => nextItem.id === item.id));
+    const removedPoints = previousData.pointsPrograms.filter((item) => !nextData.pointsPrograms.some((nextItem) => nextItem.id === item.id));
+    const removedMiles = previousData.milesPrograms.filter((item) => !nextData.milesPrograms.some((nextItem) => nextItem.id === item.id));
+
+    for (const transfer of removedTransfers) {
+      await deleteRecordFromSupabase("bonus_transfers", userId, transfer.id);
+    }
+    for (const card of removedCards) {
+      await deleteRecordFromSupabase("credit_cards", userId, card.id);
+    }
+    for (const redemption of removedRedemptions) {
+      await deleteRecordFromSupabase("flight_redemptions", userId, redemption.id);
+    }
+    for (const goal of removedGoals) {
+      await deleteRecordFromSupabase("goals", userId, goal.id);
+    }
+    for (const program of removedPoints) {
+      await deleteRecordFromSupabase("points_programs", userId, program.id);
+    }
+    for (const program of removedMiles) {
+      await deleteRecordFromSupabase("miles_programs", userId, program.id);
+    }
+
+    const syncedData: AppData = {
+      ...nextData,
+      cards: [],
+      pointsPrograms: [],
+      milesPrograms: [],
+      transfers: [],
+      redemptions: [],
+      goals: [],
+    };
+
+    const savedClient = await saveClientToSupabase(userId, nextData);
+    syncedData.id = savedClient.id;
+
+    for (const card of nextData.cards) {
+      syncedData.cards.push(await saveCardToSupabase(userId, syncedData.id, card));
+    }
+    for (const program of nextData.pointsPrograms) {
+      syncedData.pointsPrograms.push(await savePointsProgramToSupabase(userId, syncedData.id, program));
+    }
+    for (const program of nextData.milesPrograms) {
+      syncedData.milesPrograms.push(await saveMilesProgramToSupabase(userId, syncedData.id, program));
+    }
+    for (const transfer of nextData.transfers) {
+      syncedData.transfers.push(await saveTransferToSupabase(userId, syncedData.id, transfer, syncedData.pointsPrograms, syncedData.milesPrograms));
+    }
+    for (const redemption of nextData.redemptions) {
+      syncedData.redemptions.push(await saveRedemptionToSupabase(userId, syncedData.id, redemption));
+    }
+    for (const goal of nextData.goals) {
+      syncedData.goals.push(await saveGoalToSupabase(userId, syncedData.id, goal));
+    }
+
+    return syncedData;
+  }
+
+  async function updateData(nextData: AppData) {
+    try {
+      const previousData = data;
+      const syncedData = await persistAppData(previousData, nextData);
+      updateClients(clients.map((client) => (client.id === previousData.id ? syncedData : client)));
+      return true;
+    } catch (error) {
+      showSupabaseSaveError(error);
+      return false;
+    }
   }
 
   async function addClient() {
-    const nextClient = createEmptyClient();
-
     try {
+      const userId = await getAuthenticatedUserId();
       const {
         data: { user },
-        error: userError,
       } = await supabase.auth.getUser();
-
-      if (userError || !user) {
-        throw userError ?? new Error("Usuario autenticado nao encontrado.");
-      }
-
-      await ensureUserProfile(user);
-
+      const nextClient = createEmptyClient();
       const today = new Date().toISOString().slice(0, 10);
-      const { data: insertedClient, error: insertError } = await supabase
-        .from("clients")
-        .insert([
-          {
-            user_id: user.id,
-            name: "Novo Cliente",
-            email: user.email ?? "",
-            phone: "",
-            plan: "free",
-            joined_at: today,
-          },
-        ])
-        .select("id, name, email, phone, plan, joined_at, notes")
-        .single();
-
-      if (insertError) {
-        throw insertError;
+      if (user) {
+        await ensureUserProfile(user);
       }
-
-      const supabaseClient = mapSupabaseClientToAppData(insertedClient, {
+      const savedClient = await saveClientToSupabase(userId, {
         ...nextClient,
         profile: {
           ...nextClient.profile,
-          email: user.email ?? "",
+          email: user?.email ?? "",
           joinedAt: today,
           plan: "free",
         },
       });
 
-      updateClients([...clients, supabaseClient]);
-      setActiveClientId(supabaseClient.id);
+      updateClients([...clients, savedClient]);
+      setActiveClientId(savedClient.id);
       setActiveSection("profile");
-      return;
     } catch (error) {
-      console.error("Nao foi possivel criar cliente no Supabase. Usando localStorage como fallback.", error);
+      showSupabaseSaveError(error);
     }
-
-    updateClients([...clients, nextClient]);
-    setActiveClientId(nextClient.id);
-    setActiveSection("profile");
   }
 
   async function removeClient(clientId: string) {
-    if (isUuid(clientId)) {
-      try {
-        const {
-          data: { user },
-          error: userError,
-        } = await supabase.auth.getUser();
+    try {
+      const userId = await getAuthenticatedUserId();
+      await deleteRecordFromSupabase("clients", userId, clientId);
 
-        if (userError || !user) {
-          throw userError ?? new Error("Usuario autenticado nao encontrado.");
-        }
-
-        const { error: deleteError } = await supabase
-          .from("clients")
-          .delete()
-          .eq("id", clientId)
-          .eq("user_id", user.id);
-
-        if (deleteError) {
-          throw deleteError;
-        }
-      } catch (error) {
-        console.error("Nao foi possivel remover cliente no Supabase. Removendo apenas no fallback local.", error);
+      const remaining = clients.filter((client) => client.id !== clientId);
+      if (remaining.length === 0) {
+        const nextClient = await saveClientToSupabase(userId, createEmptyClient());
+        updateClients([nextClient]);
+        setActiveClientId(nextClient.id);
+        return;
       }
-    }
-
-    const remaining = clients.filter((client) => client.id !== clientId);
-    if (remaining.length === 0) {
-      const nextClient = createEmptyClient();
-      updateClients([nextClient]);
-      setActiveClientId(nextClient.id);
-      return;
-    }
-    updateClients(remaining);
-    if (activeClientId === clientId) {
-      setActiveClientId(remaining[0].id);
+      updateClients(remaining);
+      if (activeClientId === clientId) {
+        setActiveClientId(remaining[0].id);
+      }
+    } catch (error) {
+      showSupabaseSaveError(error);
     }
   }
 
@@ -1245,28 +1714,13 @@ export default function App() {
         throw profileError;
       }
 
-      if (isUuid(nextData.id)) {
-        const { error: clientError } = await supabase
-          .from("clients")
-          .update({
-            name: profile.name,
-            email: profile.email,
-            phone: profile.phone,
-            plan: profile.plan,
-            joined_at: profile.joinedAt,
-          })
-          .eq("id", nextData.id)
-          .eq("user_id", user.id);
-
-        if (clientError) {
-          throw clientError;
-        }
-      }
+      const savedClient = await saveClientToSupabase(user.id, nextData);
+      updateClients(clients.map((client) => (client.id === nextData.id ? savedClient : client)));
+      return true;
     } catch (error) {
-      console.error("Nao foi possivel salvar perfil/cliente no Supabase. Salvando no fallback local.", error);
+      showSupabaseSaveError(error);
+      return false;
     }
-
-    updateData(nextData);
   }
 
   async function handleLogin(email: string, password: string) {
@@ -1303,7 +1757,8 @@ export default function App() {
     setIsMigrating(true);
 
     try {
-      const summary = await migrateLocalStorageToSupabase();
+      const userId = await getAuthenticatedUserId();
+      const summary = await migrateLocalCacheToSupabase(userId, getLocalStorageClientsForMigration());
       setMigrationSummary(summary);
     } catch (error) {
       console.error("Falha ao migrar dados locais para o Supabase.", error);
@@ -1687,13 +2142,13 @@ function Dashboard({ data, goTo }: { data: AppData; goTo: (section: Section) => 
   );
 }
 
-function CardsModule({ data, updateData }: { data: AppData; updateData: (data: AppData) => void }) {
+function CardsModule({ data, updateData }: { data: AppData; updateData: (data: AppData) => Promise<boolean> }) {
   const total = data.cards.reduce((sum, card) => sum + card.pointsBalance, 0);
   const [draft, setDraft] = useState({ bank: "", cardName: "", limitValue: "", pointsBalance: "", pointsPerDollar: "", dueDay: "" });
 
-  function addCard() {
+  async function addCard() {
     if (!draft.bank || !draft.cardName) return;
-    updateData({
+    const saved = await updateData({
       ...data,
       cards: [
         ...data.cards,
@@ -1708,7 +2163,9 @@ function CardsModule({ data, updateData }: { data: AppData; updateData: (data: A
         },
       ],
     });
-    setDraft({ bank: "", cardName: "", limitValue: "", pointsBalance: "", pointsPerDollar: "", dueDay: "" });
+    if (saved) {
+      setDraft({ bank: "", cardName: "", limitValue: "", pointsBalance: "", pointsPerDollar: "", dueDay: "" });
+    }
   }
 
   return (
@@ -1739,7 +2196,7 @@ function CardsModule({ data, updateData }: { data: AppData; updateData: (data: A
   );
 }
 
-function ProgramsModule({ data, updateData }: { data: AppData; updateData: (data: AppData) => void }) {
+function ProgramsModule({ data, updateData }: { data: AppData; updateData: (data: AppData) => Promise<boolean> }) {
   const [draftMiles, setDraftMiles] = useState({
     airline: "Smiles",
     customAirline: "",
@@ -1803,7 +2260,7 @@ function ProgramsModule({ data, updateData }: { data: AppData; updateData: (data
   const promotionGain = bonusMiles * destinationCpm;
   const potentialPatrimony = currentPatrimony - currentOriginValue + finalFinancialValue;
 
-  function addMilesProgram() {
+  async function addMilesProgram() {
     const airlineName = draftMiles.airline === "Outro..." ? draftMiles.customAirline.trim() : draftMiles.airline;
     if (!airlineName || !draftMiles.balance) return;
     const previousMilesProgram = data.milesPrograms.find((program) => program.id === draftMiles.editingMilesId);
@@ -1815,7 +2272,7 @@ function ProgramsModule({ data, updateData }: { data: AppData; updateData: (data
       bonusPercentage: 0,
       expirationDate: draftMiles.expirationDate,
     };
-    updateData({
+    const saved = await updateData({
       ...data,
       milesPrograms: draftMiles.editingMilesId
         ? data.milesPrograms.map((program) => (program.id === draftMiles.editingMilesId ? milesProgram : program))
@@ -1828,7 +2285,9 @@ function ProgramsModule({ data, updateData }: { data: AppData; updateData: (data
           ))
         : data.transfers,
     });
-    resetMilesDraft();
+    if (saved) {
+      resetMilesDraft();
+    }
   }
 
   function resetMilesDraft() {
@@ -1847,7 +2306,7 @@ function ProgramsModule({ data, updateData }: { data: AppData; updateData: (data
     });
   }
 
-  function addPointsProgram() {
+  async function addPointsProgram() {
     const programName = draftPoints.programName === "Outro..." ? draftPoints.customProgramName.trim() : draftPoints.programName;
     const destinationProgramName = draftPoints.destinationProgramName === "Outro..."
       ? draftPoints.customDestinationProgramName.trim()
@@ -1915,8 +2374,10 @@ function ProgramsModule({ data, updateData }: { data: AppData; updateData: (data
       ? data.transfers.map((transfer) => (transfer.id === transferRecord.id ? transferRecord : transfer))
       : [...data.transfers, transferRecord];
 
-    updateData({ ...data, pointsPrograms, milesPrograms, transfers });
-    resetPointsDraft();
+    const saved = await updateData({ ...data, pointsPrograms, milesPrograms, transfers });
+    if (saved) {
+      resetPointsDraft();
+    }
   }
 
   function resetPointsDraft() {
@@ -2303,7 +2764,7 @@ function LegacyProgramsModule({ data, updateData }: { data: AppData; updateData:
   );
 }
 
-function RedemptionsModule({ data, updateData }: { data: AppData; updateData: (data: AppData) => void }) {
+function RedemptionsModule({ data, updateData }: { data: AppData; updateData: (data: AppData) => Promise<boolean> }) {
   const [draft, setDraft] = useState({ date: "", origin: "", destination: "", airline: "", regularPrice: "", milesUsed: "", cpm: "", airportFee: "", editingRedemptionId: "" });
   const [showOriginSuggestions, setShowOriginSuggestions] = useState(false);
   const [showDestinationSuggestions, setShowDestinationSuggestions] = useState(false);
@@ -2311,7 +2772,7 @@ function RedemptionsModule({ data, updateData }: { data: AppData; updateData: (d
   const filteredOrigins = draft.origin ? airports.filter((a) => a.code.includes(draft.origin.toUpperCase()) || a.city.toLowerCase().includes(draft.origin.toLowerCase())) : [];
   const filteredDestinations = draft.destination ? airports.filter((a) => a.code.includes(draft.destination.toUpperCase()) || a.city.toLowerCase().includes(draft.destination.toLowerCase())) : [];
 
-  function addRedemption() {
+  async function addRedemption() {
     if (!draft.date || !draft.origin || !draft.destination) return;
     const milesUsed = Number(draft.milesUsed);
     const cpm = parseCpmInput(draft.cpm);
@@ -2329,13 +2790,15 @@ function RedemptionsModule({ data, updateData }: { data: AppData; updateData: (d
       cpm,
       airportFee,
     };
-    updateData({
+    const saved = await updateData({
       ...data,
       redemptions: draft.editingRedemptionId
         ? data.redemptions.map((item) => (item.id === draft.editingRedemptionId ? redemption : item))
         : [...data.redemptions, redemption],
     });
-    resetRedemptionDraft();
+    if (saved) {
+      resetRedemptionDraft();
+    }
   }
 
   function resetRedemptionDraft() {
@@ -2460,14 +2923,16 @@ function EconomiesModule({ data }: { data: AppData }) {
   );
 }
 
-function GoalsModule({ data, updateData }: { data: AppData; updateData: (data: AppData) => void }) {
+function GoalsModule({ data, updateData }: { data: AppData; updateData: (data: AppData) => Promise<boolean> }) {
   const totalMiles = useMetrics(data).milesBase;
   const [draft, setDraft] = useState({ title: "", destination: "", requiredMiles: "", deadline: "" });
 
-  function addGoal() {
+  async function addGoal() {
     if (!draft.title || !draft.destination || !draft.requiredMiles || !draft.deadline) return;
-    updateData({ ...data, goals: [...data.goals, { id: crypto.randomUUID(), title: draft.title, destination: draft.destination, requiredMiles: parseMilesInput(draft.requiredMiles), deadline: draft.deadline }] });
-    setDraft({ title: "", destination: "", requiredMiles: "", deadline: "" });
+    const saved = await updateData({ ...data, goals: [...data.goals, { id: crypto.randomUUID(), title: draft.title, destination: draft.destination, requiredMiles: parseMilesInput(draft.requiredMiles), deadline: draft.deadline }] });
+    if (saved) {
+      setDraft({ title: "", destination: "", requiredMiles: "", deadline: "" });
+    }
   }
 
   return (
@@ -2526,7 +2991,7 @@ function ProfileModule({
   data: AppData;
   removeClient: (clientId: string) => void | Promise<void>;
   setActiveClientId: (clientId: string) => void;
-  updateData: (data: AppData) => void | Promise<void>;
+  updateData: (data: AppData) => Promise<boolean>;
 }) {
   const [profile, setProfile] = useState(data.profile);
   const [savedMessage, setSavedMessage] = useState(false);
@@ -2544,9 +3009,11 @@ function ProfileModule({
   const handleSave = async () => {
     setIsSaving(true);
     try {
-      await updateData({ ...data, profile });
-      setSavedMessage(true);
-      setTimeout(() => setSavedMessage(false), 3000);
+      const saved = await updateData({ ...data, profile });
+      if (saved) {
+        setSavedMessage(true);
+        setTimeout(() => setSavedMessage(false), 3000);
+      }
     } finally {
       setIsSaving(false);
     }
