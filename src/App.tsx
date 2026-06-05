@@ -445,8 +445,6 @@ function mapSupabaseClientToAppData(
 }
 
 async function loadProfileClientsFromSupabase(userId: string) {
-  const fallbackClients = loadData();
-
   const { data: supabaseClients, error } = await supabase
     .from("clients")
     .select("id, name, email, phone, plan, joined_at, notes")
@@ -458,16 +456,10 @@ async function loadProfileClientsFromSupabase(userId: string) {
   }
 
   if (!supabaseClients || supabaseClients.length === 0) {
-    return fallbackClients;
+    return [];
   }
 
-  const profileClients = supabaseClients.map((client, index) => {
-    const sourceId = getSourceIdFromNotes(client.notes);
-    const matchingFallback = sourceId
-      ? fallbackClients.find((localClient) => localClient.id === sourceId)
-      : undefined;
-    return mapSupabaseClientToAppData(client, matchingFallback ?? fallbackClients[index] ?? createEmptyClient());
-  });
+  const profileClients = supabaseClients.map((client) => mapSupabaseClientToAppData(client, createEmptyClient()));
 
   return loadMileageAndPointsFromSupabase(userId, profileClients);
 }
@@ -596,6 +588,12 @@ function setSupabaseMigrationFlag() {
 }
 
 function showSupabaseSaveError(error: unknown) {
+  const supabaseError = error as { code?: string; message?: string; details?: string };
+  console.error("SUPABASE SAVE ERROR", {
+    code: supabaseError?.code,
+    message: supabaseError?.message,
+    details: supabaseError?.details,
+  });
   console.error("Nao foi possivel salvar no Supabase.", error);
   window.alert("Nao foi possivel salvar no Supabase. Verifique sua conexao e tente novamente.");
 }
@@ -1440,12 +1438,11 @@ export default function App() {
   async function hydrateProfileClients(userId: string) {
     try {
       const remote = await loadUserDataFromSupabase(userId);
-      const loadedClients = remote.clients.length > 0 ? remote.clients : [createEmptyClient()];
+      const loadedClients = remote.clients.filter((client) => isUuid(client.id));
       setLoadedClients(loadedClients);
-      saveData(loadedClients);
     } catch (error) {
-      console.error("Nao foi possivel carregar perfil/clientes do Supabase. Usando localStorage como fallback.", error);
-      hydrateLocalData();
+      console.error("Nao foi possivel carregar perfil/clientes do Supabase.", error);
+      setLoadedClients([]);
     }
   }
 
@@ -2987,8 +2984,9 @@ function ProfileModule({
   const [profile, setProfile] = useState(data.profile);
   const [savedMessage, setSavedMessage] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
-  const primaryClientId = clients[0]?.id;
-  const canRemoveActiveClient = clients.length > 1 && activeClientId !== primaryClientId;
+  const visibleClients = clients.filter((client) => isUuid(client.id));
+  const primaryClientId = visibleClients[0]?.id;
+  const canRemoveActiveClient = visibleClients.length > 1 && activeClientId !== primaryClientId;
 
   useEffect(() => {
     setProfile(data.profile);
@@ -3060,9 +3058,9 @@ function ProfileModule({
       </div>
 
       <div className={panelClass + " p-5"}>
-        <h2 className="text-lg font-semibold mb-4">Seus Clientes ({clients.length})</h2>
+        <h2 className="text-lg font-semibold mb-4">Seus Clientes ({visibleClients.length})</h2>
         <div className="space-y-2 max-h-96 overflow-y-auto">
-          {clients.map((client) => (
+          {visibleClients.map((client) => (
             <div
               key={client.id}
               className={`flex items-center justify-between gap-2 px-4 py-3 rounded-md border transition ${
@@ -3075,7 +3073,7 @@ function ProfileModule({
                 <p className="font-semibold">{client.profile.name}</p>
                 <p className={"text-sm " + mutedTextClass}>{client.profile.email}</p>
               </button>
-              {clients.length > 1 && (
+              {visibleClients.length > 1 && (
                 <button
                   disabled={client.id === primaryClientId}
                   onClick={() => {
