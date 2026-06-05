@@ -33,6 +33,7 @@ import { ensureUserProfile } from "./lib/supabase/ensureUserProfile";
 import type { Session } from "@supabase/supabase-js";
 import {
   deleteRecordFromSupabase,
+  handleSupabaseError,
   loadUserDataFromSupabase,
   saveCardToSupabase,
   saveClientToSupabase,
@@ -587,17 +588,6 @@ function setSupabaseMigrationFlag() {
   localStorage.setItem(supabaseMigrationFlagKey, "true");
 }
 
-function showSupabaseSaveError(error: unknown) {
-  const supabaseError = error as { code?: string; message?: string; details?: string };
-  console.error("SUPABASE SAVE ERROR", {
-    code: supabaseError?.code,
-    message: supabaseError?.message,
-    details: supabaseError?.details,
-  });
-  console.error("Nao foi possivel salvar no Supabase.", error);
-  window.alert("Nao foi possivel salvar no Supabase. Verifique sua conexao e tente novamente.");
-}
-
 function nullIfEmpty(value: string | undefined) {
   return value?.trim() ? value : null;
 }
@@ -616,14 +606,6 @@ function getNotesText(notes: string | null | undefined, key: string, fallback: s
   return match?.[1]?.trim() || fallback;
 }
 
-function getPointsProgramNotes(program: PointsProgram) {
-  return getMigrationNotes(program.id, `tipo: ${program.type}; cpm: ${parseCpmInput(program.cpm)}`);
-}
-
-function getMilesProgramNotes(program: MilesProgram) {
-  return getMigrationNotes(program.id, `cpm: ${parseCpmInput(program.cpm)}; bonus: ${program.bonusPercentage}`);
-}
-
 function getTransferNotes(transfer: BonusTransfer) {
   return getMigrationNotes(
     transfer.id,
@@ -633,12 +615,6 @@ function getTransferNotes(transfer: BonusTransfer) {
 
 function isDuplicateError(error: unknown) {
   return typeof error === "object" && error !== null && "code" in error && error.code === "23505";
-}
-
-function isSchemaCompatibilityError(error: unknown) {
-  if (typeof error !== "object" || error === null) return false;
-  const candidate = error as { code?: string; message?: string };
-  return candidate.code === "PGRST204" || candidate.message?.includes("column") || false;
 }
 
 async function ensureMigratedClient(userId: string, localClient: AppData, index: number) {
@@ -1179,185 +1155,6 @@ async function migrateLocalCacheToSupabase(userId: string, localClients: AppData
   return summary;
 }
 
-async function saveMileageAndPointsToSupabase(userId: string, previousData: AppData, nextData: AppData) {
-  const removedTransferIds = previousData.transfers
-    .filter((previousTransfer) => !nextData.transfers.some((transfer) => transfer.id === previousTransfer.id))
-    .map((transfer) => transfer.id)
-    .filter(isUuid);
-  const removedPointsIds = previousData.pointsPrograms
-    .filter((previousProgram) => !nextData.pointsPrograms.some((program) => program.id === previousProgram.id))
-    .map((program) => program.id)
-    .filter(isUuid);
-  const removedMilesIds = previousData.milesPrograms
-    .filter((previousProgram) => !nextData.milesPrograms.some((program) => program.id === previousProgram.id))
-    .map((program) => program.id)
-    .filter(isUuid);
-
-  if (removedTransferIds.length > 0) {
-    const { error } = await supabase
-      .from("bonus_transfers")
-      .delete()
-      .eq("user_id", userId)
-      .in("id", removedTransferIds);
-    if (error) throw error;
-  }
-
-  if (removedPointsIds.length > 0) {
-    const { error } = await supabase
-      .from("points_programs")
-      .delete()
-      .eq("user_id", userId)
-      .in("id", removedPointsIds);
-    if (error) throw error;
-  }
-
-  if (removedMilesIds.length > 0) {
-    const { error } = await supabase
-      .from("miles_programs")
-      .delete()
-      .eq("user_id", userId)
-      .in("id", removedMilesIds);
-    if (error) throw error;
-  }
-
-  const pointsIdByName = new Map<string, string>();
-  const milesIdByName = new Map<string, string>();
-
-  for (const program of nextData.pointsPrograms) {
-    const payload = {
-      ...(isUuid(program.id) ? { id: program.id } : {}),
-      user_id: userId,
-      name: program.programName,
-      balance: Math.max(0, Math.round(program.balance)),
-      expiration_date: nullIfEmpty(program.expirationDate),
-      notes: getPointsProgramNotes(program),
-    };
-    const { data: savedProgram, error } = await supabase
-      .from("points_programs")
-      .upsert([payload as never])
-      .select("id")
-      .single();
-
-    if (error && !isSchemaCompatibilityError(error)) throw error;
-
-    if (error) {
-      const fallbackPayload = {
-        ...(isUuid(program.id) ? { id: program.id } : {}),
-        user_id: userId,
-        client_id: nextData.id,
-        type: program.type,
-        program_name: program.programName,
-        balance: Math.max(0, Math.round(program.balance)),
-        cpm: parseCpmInput(program.cpm),
-        expiration_date: nullIfEmpty(program.expirationDate),
-      };
-      const { data: fallbackSavedProgram, error: fallbackError } = await supabase
-        .from("points_programs")
-        .upsert([fallbackPayload as never])
-        .select("id")
-        .single();
-
-      if (fallbackError) throw fallbackError;
-      pointsIdByName.set(program.programName, fallbackSavedProgram.id);
-      program.id = fallbackSavedProgram.id;
-    } else {
-      pointsIdByName.set(program.programName, savedProgram.id);
-      program.id = savedProgram.id;
-    }
-  }
-
-  for (const program of nextData.milesPrograms) {
-    const payload = {
-      ...(isUuid(program.id) ? { id: program.id } : {}),
-      user_id: userId,
-      name: program.airline,
-      airline: program.airline,
-      balance: Math.max(0, Math.round(program.balance)),
-      expiration_date: nullIfEmpty(program.expirationDate),
-      notes: getMilesProgramNotes(program),
-    };
-    const { data: savedProgram, error } = await supabase
-      .from("miles_programs")
-      .upsert([payload as never])
-      .select("id")
-      .single();
-
-    if (error && !isSchemaCompatibilityError(error)) throw error;
-
-    if (error) {
-      const fallbackPayload = {
-        ...(isUuid(program.id) ? { id: program.id } : {}),
-        user_id: userId,
-        client_id: nextData.id,
-        airline: program.airline,
-        balance: Math.max(0, Math.round(program.balance)),
-        cpm: parseCpmInput(program.cpm),
-        bonus_percentage: program.bonusPercentage,
-        expiration_date: nullIfEmpty(program.expirationDate),
-      };
-      const { data: fallbackSavedProgram, error: fallbackError } = await supabase
-        .from("miles_programs")
-        .upsert([fallbackPayload as never])
-        .select("id")
-        .single();
-
-      if (fallbackError) throw fallbackError;
-      milesIdByName.set(program.airline, fallbackSavedProgram.id);
-      program.id = fallbackSavedProgram.id;
-    } else {
-      milesIdByName.set(program.airline, savedProgram.id);
-      program.id = savedProgram.id;
-    }
-  }
-
-  for (const transfer of nextData.transfers) {
-    const payload = {
-      ...(isUuid(transfer.id) ? { id: transfer.id } : {}),
-      user_id: userId,
-      points_program_id: pointsIdByName.get(transfer.originProgramName) ?? null,
-      miles_program_id: milesIdByName.get(transfer.destinationProgramName) ?? null,
-      transferred_points: Math.max(0, Math.round(transfer.sentAmount)),
-      bonus_percentage: transfer.bonusPercentage,
-      received_miles: getTransferFinalMiles(transfer),
-      transfer_date: nullIfEmpty(transfer.date),
-      status: "completed",
-      notes: getTransferNotes(transfer),
-    };
-    const { data: savedTransfer, error } = await supabase
-      .from("bonus_transfers")
-      .upsert([payload as never])
-      .select("id")
-      .single();
-
-    if (error && !isSchemaCompatibilityError(error)) throw error;
-
-    if (error) {
-      const fallbackPayload = {
-        ...(isUuid(transfer.id) ? { id: transfer.id } : {}),
-        user_id: userId,
-        client_id: nextData.id,
-        origin_program_id: pointsIdByName.get(transfer.originProgramName) ?? null,
-        destination_program_id: milesIdByName.get(transfer.destinationProgramName) ?? null,
-        origin_program_name: transfer.originProgramName,
-        destination_program_name: transfer.destinationProgramName,
-        sent_amount: Math.max(0, Math.round(transfer.sentAmount)),
-        bonus_percentage: transfer.bonusPercentage,
-        transfer_date: nullIfEmpty(transfer.date),
-      };
-      const { data: fallbackSavedTransfer, error: fallbackError } = await supabase
-        .from("bonus_transfers")
-        .upsert([fallbackPayload as never])
-        .select("id")
-        .single();
-
-      if (fallbackError) throw fallbackError;
-      transfer.id = fallbackSavedTransfer.id;
-    } else {
-      transfer.id = savedTransfer.id;
-    }
-  }
-}
-
 async function hasExistingSupabaseAppData(userId: string) {
   const tables = [
     "credit_cards",
@@ -1601,7 +1398,7 @@ export default function App() {
       updateClients(clients.map((client) => (client.id === previousData.id ? syncedData : client)));
       return true;
     } catch (error) {
-      showSupabaseSaveError(error);
+      handleSupabaseError("app.updateData", error, { clientId: nextData.id });
       return false;
     } finally {
       isSavingDataRef.current = false;
@@ -1633,7 +1430,7 @@ export default function App() {
       setActiveClientId(savedClient.id);
       setActiveSection("profile");
     } catch (error) {
-      showSupabaseSaveError(error);
+      handleSupabaseError("clients.create", error);
     }
   }
 
@@ -1684,7 +1481,7 @@ export default function App() {
 
       removeFromLocalState();
     } catch (error) {
-      showSupabaseSaveError(error);
+      handleSupabaseError("clients.delete", error, { id: client.id });
     }
   }
 
@@ -1719,7 +1516,7 @@ export default function App() {
       updateClients(clients.map((client) => (client.id === nextData.id ? savedClient : client)));
       return true;
     } catch (error) {
-      showSupabaseSaveError(error);
+      handleSupabaseError("clients.updateProfile", error, { id: nextData.id });
       return false;
     }
   }

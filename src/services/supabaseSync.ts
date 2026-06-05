@@ -98,6 +98,37 @@ export class SupabaseSyncError extends Error {
   }
 }
 
+type SupabaseErrorPayload = Record<string, unknown> | undefined;
+
+type SupabaseErrorWithContext = {
+  code?: string;
+  message?: string;
+  details?: string;
+  context?: string;
+  payload?: SupabaseErrorPayload;
+};
+
+export function handleSupabaseError(context: string, error: unknown, payload?: SupabaseErrorPayload) {
+  const supabaseError = error as SupabaseErrorWithContext;
+  console.error("SUPABASE ERROR", {
+    context: supabaseError?.context ?? context,
+    code: supabaseError?.code,
+    message: supabaseError?.message,
+    details: supabaseError?.details,
+    payload: supabaseError?.payload ?? payload,
+  });
+  window.alert("Não foi possível salvar no Supabase. Tente novamente.");
+}
+
+function throwSupabaseError(context: string, error: unknown, payload?: SupabaseErrorPayload): never {
+  if (typeof error === "object" && error !== null) {
+    const enrichedError = error as SupabaseErrorWithContext;
+    enrichedError.context = context;
+    enrichedError.payload = payload;
+  }
+  throw error;
+}
+
 function ensureOnline() {
   if (typeof navigator !== "undefined" && !navigator.onLine) {
     throw new SupabaseSyncError("Sem conexao com a internet. Os dados nao foram salvos.");
@@ -240,7 +271,7 @@ async function saveByIdOrExternalId<TPrimary extends Record<string, any>, TFallb
     }
 
     if (!isSchemaCompatibilityError(error) && !isNoRowsError(error)) {
-      throw error;
+      throwSupabaseError(`${table}.update`, error, primaryPayload);
     }
 
     if (isSchemaCompatibilityError(error)) {
@@ -257,7 +288,7 @@ async function saveByIdOrExternalId<TPrimary extends Record<string, any>, TFallb
       }
 
       if (!isNoRowsError(fallbackError)) {
-        throw fallbackError;
+        throwSupabaseError(`${table}.update.fallback`, fallbackError, fallbackPayload);
       }
     }
 
@@ -281,7 +312,7 @@ async function saveByIdOrExternalId<TPrimary extends Record<string, any>, TFallb
     .single();
 
   if (fallbackError) {
-    throw fallbackError;
+    throwSupabaseError(`${table}.upsert`, fallbackError, fallbackPayload);
   }
 
   return fallbackData.id as string;
@@ -445,13 +476,7 @@ export async function saveClientToSupabase(userId: string, client: AppData) {
     .single();
 
   if (error) {
-    console.error("CLIENT SAVE ERROR", {
-      code: error.code,
-      message: error.message,
-      details: error.details,
-      payload: primaryPayload,
-    });
-    throw error;
+    throwSupabaseError("clients.upsert", error, primaryPayload);
   }
 
   const id = data.id as string;
@@ -596,7 +621,8 @@ export async function deleteRecordFromSupabase(table: TableName, userId: string,
   ensureOnline();
 
   if (!isUuid(recordId)) {
-    throw new SupabaseSyncError("Registro sem id real do Supabase. A exclusao nao foi executada.");
+    console.warn("Registro sem id real do Supabase. Removendo apenas do estado/cache.", { table, recordId });
+    return;
   }
 
   const { error } = await supabase
@@ -606,6 +632,6 @@ export async function deleteRecordFromSupabase(table: TableName, userId: string,
     .eq("user_id", userId);
 
   if (error) {
-    throw error;
+    throwSupabaseError(`${table}.delete`, error, { user_id: userId, id: recordId });
   }
 }
