@@ -161,6 +161,10 @@ function externalId(prefix: string, id: string, parts: Array<string | number | u
   return `${prefix}:${parts.map((part) => String(part ?? "").trim()).join(":")}`;
 }
 
+function stableExternalId(prefix: string, parts: Array<string | number | undefined | null>) {
+  return `${prefix}:${parts.map((part) => String(part ?? "").trim().toLowerCase()).join(":")}`;
+}
+
 function parseCpmInput(value: string | number | null | undefined) {
   const parsedValue = Number(String(value ?? "").trim().replace(/\s/g, "").replace(",", "."));
   if (!Number.isFinite(parsedValue)) return 0;
@@ -197,6 +201,39 @@ function getNotesNumber(notes: string | null | undefined, key: string, fallback:
 
 function getPointsNotes(program: PointsProgram) {
   return getNotes(program.id, `tipo: ${program.type}; cpm: ${parseCpmInput(program.cpm)}`);
+}
+
+function getPointsProgramExternalId(clientId: string, program: PointsProgram) {
+  return stableExternalId("points", [
+    clientId,
+    program.type,
+    program.programName,
+    Math.max(0, Math.round(program.balance)),
+    parseCpmInput(program.cpm),
+    program.expirationDate,
+  ]);
+}
+
+function getPointsProgramRowKey(row: Record<string, any>) {
+  return [
+    row.user_id,
+    row.program_name ?? row.name ?? "",
+    String(row.balance ?? 0),
+    String(row.cpm ?? getNotesNumber(row.notes, "cpm", 0.025)),
+    row.expiration_date ?? "",
+    row.destination_program ?? "",
+    String(row.bonus_percentage ?? 0),
+  ].join("|");
+}
+
+function uniquePointRows(rows: Array<Record<string, any>>) {
+  const seen = new Set<string>();
+  return rows.filter((row) => {
+    const key = getPointsProgramRowKey(row);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function getMilesNotes(program: MilesProgram) {
@@ -358,7 +395,7 @@ export async function loadUserDataFromSupabase(userId: string, fallbackClients: 
   const pointsRowsById = new Map<string, Record<string, any>>();
   const milesRowsById = new Map<string, Record<string, any>>();
 
-  for (const row of pointRows as Array<Record<string, any>>) {
+  for (const row of uniquePointRows(pointRows as Array<Record<string, any>>)) {
     pointsRowsById.set(row.id, row);
     const client = resolveClient(row);
     if (!client) continue;
@@ -508,7 +545,7 @@ export async function savePointsProgramToSupabase(userId: string, clientId: stri
   const primaryPayload = {
     ...idPayload,
     user_id: userId,
-    external_id: externalId("points", program.id, [clientId, program.programName]),
+    external_id: getPointsProgramExternalId(clientId, program),
     type: program.type,
     program_name: program.programName,
     balance: Math.max(0, Math.round(program.balance)),

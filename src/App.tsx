@@ -613,6 +613,26 @@ function getTransferNotes(transfer: BonusTransfer) {
   );
 }
 
+function getPointsProgramSaveKey(program: PointsProgram) {
+  return [
+    program.type,
+    program.programName.trim().toLowerCase(),
+    Math.max(0, Math.round(program.balance)),
+    parseCpmInput(program.cpm),
+    program.expirationDate || "",
+  ].join("|");
+}
+
+function uniquePointProgramsForSave(programs: PointsProgram[]) {
+  const seen = new Set<string>();
+  return programs.filter((program) => {
+    const key = getPointsProgramSaveKey(program);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 function isDuplicateError(error: unknown) {
   return typeof error === "object" && error !== null && "code" in error && error.code === "23505";
 }
@@ -1366,7 +1386,7 @@ export default function App() {
     for (const card of nextData.cards) {
       syncedData.cards.push(await saveCardToSupabase(userId, syncedData.id, card));
     }
-    for (const program of nextData.pointsPrograms) {
+    for (const program of uniquePointProgramsForSave(nextData.pointsPrograms)) {
       syncedData.pointsPrograms.push(await savePointsProgramToSupabase(userId, syncedData.id, program));
     }
     for (const program of nextData.milesPrograms) {
@@ -1549,6 +1569,9 @@ export default function App() {
   }
 
   async function handleManualMigration() {
+    console.warn("Migracao localStorage -> Supabase temporariamente bloqueada para evitar duplicacao automatica.");
+    return;
+
     if (!window.confirm("Migrar dados do localStorage para o Supabase agora? Esta acao pode recriar dados locais no banco.")) {
       return;
     }
@@ -1642,7 +1665,7 @@ export default function App() {
                 <Plus size={16} />
                 Cliente
               </button>
-              {isAdmin && (
+              {false && isAdmin && (
                 <button
                   className="inline-flex items-center gap-2 rounded-md border border-[#10B981] bg-transparent px-3 py-2 text-sm font-semibold text-[#10B981] shadow-sm transition hover:bg-[#10B981]/10 disabled:cursor-not-allowed disabled:opacity-70"
                   disabled={isMigrating}
