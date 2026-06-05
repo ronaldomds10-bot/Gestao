@@ -1641,13 +1641,22 @@ export default function App() {
   }
 
   async function removeClient(clientId: string) {
+    if (clientId === clients[0]?.id) {
+      console.warn("Cliente principal protegido: remocao bloqueada.");
+      return;
+    }
+
     try {
-      const userId = await getAuthenticatedUserId();
-      await deleteRecordFromSupabase("clients", userId, clientId);
+      if (isUuid(clientId)) {
+        const userId = await getAuthenticatedUserId();
+        await deleteRecordFromSupabase("clients", userId, clientId);
+      } else {
+        console.warn("Cliente sem id real do Supabase. Removendo apenas do cache local.", clientId);
+      }
 
       const remaining = clients.filter((client) => client.id !== clientId);
       if (remaining.length === 0) {
-        const nextClient = await saveClientToSupabase(userId, createEmptyClient());
+        const nextClient = createEmptyClient();
         updateClients([nextClient]);
         setActiveClientId(nextClient.id);
         return;
@@ -2978,6 +2987,8 @@ function ProfileModule({
   const [profile, setProfile] = useState(data.profile);
   const [savedMessage, setSavedMessage] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const primaryClientId = clients[0]?.id;
+  const canRemoveActiveClient = clients.length > 1 && activeClientId !== primaryClientId;
 
   useEffect(() => {
     setProfile(data.profile);
@@ -3032,7 +3043,7 @@ function ProfileModule({
             {savedMessage && <span>✓</span>}
             {isSaving ? "Salvando..." : savedMessage ? "Salvo com sucesso!" : "Salvar"}
           </button>
-          {clients.length > 1 && (
+          {canRemoveActiveClient && (
             <button
               onClick={() => {
                 if (confirm(`Tem certeza que deseja remover ${profile.name}?`)) {
@@ -3066,13 +3077,17 @@ function ProfileModule({
               </button>
               {clients.length > 1 && (
                 <button
+                  disabled={client.id === primaryClientId}
                   onClick={() => {
+                    if (client.id === primaryClientId) {
+                      return;
+                    }
                     if (confirm(`Tem certeza que deseja remover ${client.profile.name}?`)) {
                       removeClient(client.id);
                     }
                   }}
-                  className="rounded-md border border-red-400 bg-transparent p-2 text-red-300 transition hover:bg-red-500/10"
-                  title="Remover cliente"
+                  className="rounded-md border border-red-400 bg-transparent p-2 text-red-300 transition hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-40"
+                  title={client.id === primaryClientId ? "Cliente principal protegido" : "Remover cliente"}
                 >
                   <Trash2 size={16} />
                 </button>
