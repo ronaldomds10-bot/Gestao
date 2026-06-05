@@ -1637,31 +1637,52 @@ export default function App() {
     }
   }
 
-  async function removeClient(clientId: string) {
-    if (clientId === clients[0]?.id) {
+  async function deleteClient(client: AppData) {
+    if (client.id === clients[0]?.id) {
       console.warn("Cliente principal protegido: remocao bloqueada.");
       return;
     }
 
+    const removeFromLocalState = () => {
+      const remaining = clients.filter((currentClient) => currentClient.id !== client.id);
+      updateClients(remaining);
+      if (activeClientId === client.id) {
+        setActiveClientId(remaining[0]?.id ?? "");
+      }
+    };
+
+    if (!isUuid(client.id)) {
+      console.warn("Cliente sem id real do Supabase. Removendo apenas do cache local.", client.id);
+      removeFromLocalState();
+      return;
+    }
+
     try {
-      if (isUuid(clientId)) {
-        const userId = await getAuthenticatedUserId();
-        await deleteRecordFromSupabase("clients", userId, clientId);
-      } else {
-        console.warn("Cliente sem id real do Supabase. Removendo apenas do cache local.", clientId);
+      const {
+        data: { user },
+        error: userError,
+      } = await supabase.auth.getUser();
+
+      if (userError || !user) {
+        throw userError ?? new Error("Usuario autenticado nao encontrado.");
       }
 
-      const remaining = clients.filter((client) => client.id !== clientId);
-      if (remaining.length === 0) {
-        const nextClient = createEmptyClient();
-        updateClients([nextClient]);
-        setActiveClientId(nextClient.id);
-        return;
+      const { data: deletedRows, error } = await supabase
+        .from("clients")
+        .delete()
+        .eq("id", client.id)
+        .eq("user_id", user.id)
+        .select("id");
+
+      if (error) {
+        throw error;
       }
-      updateClients(remaining);
-      if (activeClientId === clientId) {
-        setActiveClientId(remaining[0].id);
+
+      if (!deletedRows || deletedRows.length === 0) {
+        throw new Error("Cliente nao encontrado para o usuario autenticado.");
       }
+
+      removeFromLocalState();
     } catch (error) {
       showSupabaseSaveError(error);
     }
@@ -1890,7 +1911,7 @@ export default function App() {
               activeClientId={activeClientId}
               clients={clients}
               data={data}
-              removeClient={removeClient}
+              deleteClient={deleteClient}
               setActiveClientId={setActiveClientId}
               updateData={updateProfileClient}
             />
@@ -2969,7 +2990,7 @@ function ProfileModule({
   activeClientId,
   clients,
   data,
-  removeClient,
+  deleteClient,
   setActiveClientId,
   updateData,
 }: {
@@ -2977,7 +2998,7 @@ function ProfileModule({
   activeClientId: string;
   clients: AppData[];
   data: AppData;
-  removeClient: (clientId: string) => void | Promise<void>;
+  deleteClient: (client: AppData) => void | Promise<void>;
   setActiveClientId: (clientId: string) => void;
   updateData: (data: AppData) => Promise<boolean>;
 }) {
@@ -3045,7 +3066,7 @@ function ProfileModule({
             <button
               onClick={() => {
                 if (confirm(`Tem certeza que deseja remover ${profile.name}?`)) {
-                  removeClient(activeClientId);
+                  deleteClient(data);
                 }
               }}
               className="inline-flex items-center gap-2 rounded border border-red-400 bg-transparent px-5 py-3 text-sm font-semibold text-red-300 transition hover:bg-red-500/10"
@@ -3081,7 +3102,7 @@ function ProfileModule({
                       return;
                     }
                     if (confirm(`Tem certeza que deseja remover ${client.profile.name}?`)) {
-                      removeClient(client.id);
+                      deleteClient(client);
                     }
                   }}
                   className="rounded-md border border-red-400 bg-transparent p-2 text-red-300 transition hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-40"

@@ -444,7 +444,15 @@ export async function saveClientToSupabase(userId: string, client: AppData) {
     .select("id")
     .single();
 
-  if (error) throw error;
+  if (error) {
+    console.error("CLIENT SAVE ERROR", {
+      code: error.code,
+      message: error.message,
+      details: error.details,
+      payload: primaryPayload,
+    });
+    throw error;
+  }
 
   const id = data.id as string;
   return { ...client, id };
