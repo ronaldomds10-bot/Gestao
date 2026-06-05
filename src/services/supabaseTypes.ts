@@ -4,6 +4,7 @@ export type ProfileRow = {
   id: string;
   user_id: string;
   name: string;
+  full_name: string | null;
   email: string;
   phone: string;
   created_at: string;
@@ -112,6 +113,7 @@ type TableDefinition<Row> = {
     user_id: string;
   };
   Update: Partial<Omit<Row, "id" | "user_id" | "created_at" | "updated_at">>;
+  Relationships: [];
 };
 
 export type Database = {

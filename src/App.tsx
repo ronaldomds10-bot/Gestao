@@ -29,6 +29,7 @@ import {
   WalletCards,
 } from "lucide-react";
 import { supabase } from "./lib/supabase/client";
+import { ensureUserProfile } from "./lib/supabase/ensureUserProfile";
 import type { Session } from "@supabase/supabase-js";
 
 type MilesProgram = {
@@ -477,10 +478,24 @@ export default function App() {
   useEffect(() => {
     let mounted = true;
 
-    supabase.auth.getSession().then(({ data: { session: currentSession } }) => {
+    supabase.auth.getSession().then(async ({ data: { session: currentSession } }) => {
       if (!mounted) return;
       setSession(currentSession);
       if (currentSession) {
+        const {
+          data: { user },
+          error,
+        } = await supabase.auth.getUser();
+
+        if (error) {
+          console.error("Sessao restaurada, mas nao foi possivel buscar o usuario autenticado.", error);
+        }
+
+        if (user) {
+          await ensureUserProfile(user);
+        }
+
+        if (!mounted) return;
         hydrateLocalData();
       }
       setAuthLoading(false);
@@ -488,9 +503,23 @@ export default function App() {
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+    } = supabase.auth.onAuthStateChange(async (_event, nextSession) => {
       setSession(nextSession);
       if (nextSession) {
+        const {
+          data: { user },
+          error,
+        } = await supabase.auth.getUser();
+
+        if (error) {
+          console.error("Auth mudou, mas nao foi possivel buscar o usuario autenticado.", error);
+        }
+
+        if (user) {
+          await ensureUserProfile(user);
+        }
+
+        if (!mounted) return;
         hydrateLocalData();
         return;
       }
@@ -538,7 +567,25 @@ export default function App() {
 
   async function handleLogin(email: string, password: string) {
     const { error } = await supabase.auth.signInWithPassword({ email, password });
-    return !error;
+    if (error) {
+      return false;
+    }
+
+    const {
+      data: { user },
+      error: userError,
+    } = await supabase.auth.getUser();
+
+    if (userError) {
+      console.error("Login realizado, mas nao foi possivel buscar o usuario autenticado.", userError);
+      return true;
+    }
+
+    if (user) {
+      await ensureUserProfile(user);
+    }
+
+    return true;
   }
 
   async function handleLogout() {
