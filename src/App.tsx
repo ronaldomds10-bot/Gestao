@@ -109,6 +109,15 @@ type AppData = {
   profile: Profile;
 };
 
+type MigrationSummary = {
+  cards: number;
+  pointsPrograms: number;
+  milesPrograms: number;
+  transfers: number;
+  redemptions: number;
+  goals: number;
+};
+
 type Section =
   | "dashboard"
   | "cards"
@@ -127,6 +136,7 @@ const softPanelClass = "rounded-lg border border-[#1E3A5F] bg-[#233B5D] text-whi
 const mutedTextClass = "text-[#CBD5E1]";
 const supportTextClass = "text-[#94A3B8]";
 const inputClass = "rounded border border-[#3B5B82] bg-[#233B5D] text-white placeholder:text-[#B8C7D9] outline-none transition focus:border-[#A855F7] focus:ring-4 focus:ring-[#A855F7]/20";
+const adminEmails = new Set(["ronaldomds10@gmail.com"]);
 
 const airports = [
   { code: "GRU", city: "São Paulo" },
@@ -456,14 +466,442 @@ function createEmptyClient(): AppData {
   };
 }
 
+function getLocalStorageClientsForMigration() {
+  const clientsStored = localStorage.getItem("rm-miles-hub-clients");
+  if (clientsStored) {
+    return (JSON.parse(clientsStored) as LegacyClientData[]).map((client, index) => normalizeClient(client, index));
+  }
+
+  const legacyStored = localStorage.getItem("rm-miles-hub-data");
+  if (legacyStored) {
+    return [normalizeClient(JSON.parse(legacyStored) as LegacyClientData)];
+  }
+
+  return [] as AppData[];
+}
+
+function nullIfEmpty(value: string | undefined) {
+  return value?.trim() ? value : null;
+}
+
+function getMigrationNotes(sourceId: string, details?: string) {
+  return `Migrado do localStorage: ${sourceId}`;
+}
+
+function isDuplicateError(error: unknown) {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "23505";
+}
+
+async function ensureMigratedClient(userId: string, localClient: AppData, index: number) {
+  const profile = localClient.profile;
+  const name = profile.name || profile.email || "Cliente";
+  const email = profile.email || "";
+  const joinedAt = profile.joinedAt || new Date().toISOString().slice(0, 10);
+  const plan = profile.plan || "free";
+
+  if (index === 0) {
+    const { data: existingClient, error: selectError } = await supabase
+      .from("clients")
+      .select("id")
+      .eq("user_id", userId)
+      .limit(1)
+      .maybeSingle();
+
+    if (selectError) {
+      throw selectError;
+    }
+
+    if (existingClient) {
+      const { error: updateError } = await supabase
+        .from("clients")
+        .update({
+          name,
+          email,
+          phone: profile.phone || "",
+          plan,
+          joined_at: joinedAt,
+          notes: getMigrationNotes(localClient.id),
+        })
+        .eq("id", existingClient.id)
+        .eq("user_id", userId);
+
+      if (updateError) {
+        throw updateError;
+      }
+
+      return existingClient.id;
+    }
+  }
+
+  const notes = getMigrationNotes(localClient.id);
+  const { data: existingByNotes, error: notesError } = await supabase
+    .from("clients")
+    .select("id")
+    .eq("user_id", userId)
+    .eq("notes", notes)
+    .limit(1)
+    .maybeSingle();
+
+  if (notesError) {
+    throw notesError;
+  }
+
+  if (existingByNotes) {
+    return existingByNotes.id;
+  }
+
+  const { data: insertedClient, error: insertError } = await supabase
+    .from("clients")
+    .insert([
+      {
+        user_id: userId,
+        name,
+        email,
+        phone: profile.phone || "",
+        plan,
+        joined_at: joinedAt,
+        notes,
+      },
+    ])
+    .select("id")
+    .single();
+
+  if (insertError) {
+    throw insertError;
+  }
+
+  return insertedClient.id;
+}
+
+async function ensureMigratedPointsProgram(userId: string, program: PointsProgram) {
+  const notes = getMigrationNotes(program.id, `tipo: ${program.type}; cpm: ${parseCpmInput(program.cpm)}`);
+  const { data: existing, error: selectError } = await supabase
+    .from("points_programs")
+    .select("id")
+    .eq("user_id", userId)
+    .eq("notes", notes)
+    .limit(1)
+    .maybeSingle();
+
+  if (selectError) {
+    throw selectError;
+  }
+
+  if (existing) {
+    return { id: existing.id, inserted: false };
+  }
+
+  const { data: inserted, error: insertError } = await supabase
+    .from("points_programs")
+    .insert([
+      {
+        user_id: userId,
+        name: program.programName,
+        balance: Math.max(0, Math.round(program.balance)),
+        expiration_date: nullIfEmpty(program.expirationDate),
+        notes,
+      },
+    ])
+    .select("id")
+    .single();
+
+  if (insertError) {
+    if (isDuplicateError(insertError)) {
+      return { id: "", inserted: false };
+    }
+    throw insertError;
+  }
+
+  return { id: inserted.id, inserted: true };
+}
+
+async function ensureMigratedMilesProgram(userId: string, program: MilesProgram) {
+  const notes = getMigrationNotes(program.id, `cpm: ${parseCpmInput(program.cpm)}; bonus: ${program.bonusPercentage}`);
+  const { data: existing, error: selectError } = await supabase
+    .from("miles_programs")
+    .select("id")
+    .eq("user_id", userId)
+    .eq("notes", notes)
+    .limit(1)
+    .maybeSingle();
+
+  if (selectError) {
+    throw selectError;
+  }
+
+  if (existing) {
+    return { id: existing.id, inserted: false };
+  }
+
+  const { data: inserted, error: insertError } = await supabase
+    .from("miles_programs")
+    .insert([
+      {
+        user_id: userId,
+        name: program.airline,
+        airline: program.airline,
+        balance: Math.max(0, Math.round(program.balance)),
+        expiration_date: nullIfEmpty(program.expirationDate),
+        notes,
+      },
+    ])
+    .select("id")
+    .single();
+
+  if (insertError) {
+    if (isDuplicateError(insertError)) {
+      return { id: "", inserted: false };
+    }
+    throw insertError;
+  }
+
+  return { id: inserted.id, inserted: true };
+}
+
+async function migrateLocalStorageToSupabase() {
+  const {
+    data: { user },
+    error: userError,
+  } = await supabase.auth.getUser();
+
+  if (userError || !user) {
+    throw userError ?? new Error("Usuario autenticado nao encontrado.");
+  }
+
+  const localClients = getLocalStorageClientsForMigration();
+  const summary: MigrationSummary = {
+    cards: 0,
+    pointsPrograms: 0,
+    milesPrograms: 0,
+    transfers: 0,
+    redemptions: 0,
+    goals: 0,
+  };
+
+  await ensureUserProfile(user);
+
+  for (const [clientIndex, localClient] of localClients.entries()) {
+    const profile = localClient.profile;
+    const profileName = profile.name || profile.email || user.email || "Usuario";
+
+    const { error: profileError } = await supabase
+      .from("profiles")
+      .update({
+        email: profile.email || user.email || "",
+        name: profileName,
+        full_name: profileName,
+        phone: profile.phone || "",
+      })
+      .eq("user_id", user.id);
+
+    if (profileError) {
+      throw profileError;
+    }
+
+    const clientId = await ensureMigratedClient(user.id, localClient, clientIndex);
+    const pointsProgramIds = new Map<string, string>();
+    const milesProgramIds = new Map<string, string>();
+
+    for (const card of localClient.cards) {
+      const { data: existingCard, error: cardSelectError } = await supabase
+        .from("credit_cards")
+        .select("id")
+        .eq("user_id", user.id)
+        .eq("name", card.cardName)
+        .eq("bank", card.bank)
+        .eq("due_day", card.dueDay)
+        .limit(1)
+        .maybeSingle();
+
+      if (cardSelectError) {
+        throw cardSelectError;
+      }
+
+      if (!existingCard) {
+        const { error: cardInsertError } = await supabase.from("credit_cards").insert([
+          {
+            user_id: user.id,
+            name: card.cardName,
+            bank: card.bank,
+            due_day: card.dueDay,
+            annual_fee: null,
+            points_multiplier: Number(card.pointsPerDollar) || 0,
+            brand: null,
+            last_four: null,
+            closing_day: null,
+          },
+        ]);
+
+        if (cardInsertError && !isDuplicateError(cardInsertError)) {
+          throw cardInsertError;
+        }
+
+        if (!cardInsertError) {
+          summary.cards += 1;
+        }
+      }
+    }
+
+    for (const program of localClient.pointsPrograms) {
+      const result = await ensureMigratedPointsProgram(user.id, program);
+      if (result.id) {
+        pointsProgramIds.set(program.programName, result.id);
+      }
+      if (result.inserted) {
+        summary.pointsPrograms += 1;
+      }
+    }
+
+    for (const program of localClient.milesPrograms) {
+      const result = await ensureMigratedMilesProgram(user.id, program);
+      if (result.id) {
+        milesProgramIds.set(program.airline, result.id);
+      }
+      if (result.inserted) {
+        summary.milesPrograms += 1;
+      }
+    }
+
+    for (const transfer of localClient.transfers) {
+      const receivedMiles = getTransferFinalMiles(transfer);
+      const notes = getMigrationNotes(
+        transfer.id,
+        `origem: ${transfer.originProgramName}; destino: ${transfer.destinationProgramName}`,
+      );
+      const { data: existingTransfer, error: transferSelectError } = await supabase
+        .from("bonus_transfers")
+        .select("id")
+        .eq("user_id", user.id)
+        .eq("notes", notes)
+        .limit(1)
+        .maybeSingle();
+
+      if (transferSelectError) {
+        throw transferSelectError;
+      }
+
+      if (!existingTransfer) {
+        const { error: transferInsertError } = await supabase.from("bonus_transfers").insert([
+          {
+            user_id: user.id,
+            points_program_id: pointsProgramIds.get(transfer.originProgramName) ?? null,
+            miles_program_id: milesProgramIds.get(transfer.destinationProgramName) ?? null,
+            transferred_points: Math.max(0, Math.round(transfer.sentAmount)),
+            bonus_percentage: transfer.bonusPercentage,
+            received_miles: receivedMiles,
+            transfer_date: nullIfEmpty(transfer.date),
+            status: "completed",
+            notes,
+          },
+        ]);
+
+        if (transferInsertError && !isDuplicateError(transferInsertError)) {
+          throw transferInsertError;
+        }
+
+        if (!transferInsertError) {
+          summary.transfers += 1;
+        }
+      }
+    }
+
+    for (const redemption of localClient.redemptions) {
+      const costs = getRedemptionCosts(redemption);
+      const notes = getMigrationNotes(redemption.id, `companhia: ${redemption.airline}`);
+      const { data: existingRedemption, error: redemptionSelectError } = await supabase
+        .from("flight_redemptions")
+        .select("id")
+        .eq("user_id", user.id)
+        .eq("notes", notes)
+        .limit(1)
+        .maybeSingle();
+
+      if (redemptionSelectError) {
+        throw redemptionSelectError;
+      }
+
+      if (!existingRedemption) {
+        const { error: redemptionInsertError } = await supabase.from("flight_redemptions").insert([
+          {
+            user_id: user.id,
+            client_id: clientId,
+            miles_program_id: milesProgramIds.get(redemption.airline) ?? null,
+            origin: redemption.origin,
+            destination: redemption.destination,
+            departure_date: nullIfEmpty(redemption.date),
+            return_date: null,
+            miles_used: Math.max(0, Math.round(redemption.milesUsed)),
+            cash_cost: costs.totalCost,
+            taxes: costs.airportFee,
+            sale_price: redemption.regularPrice,
+            status: "completed",
+            notes,
+          },
+        ]);
+
+        if (redemptionInsertError && !isDuplicateError(redemptionInsertError)) {
+          throw redemptionInsertError;
+        }
+
+        if (!redemptionInsertError) {
+          summary.redemptions += 1;
+        }
+      }
+    }
+
+    for (const goal of localClient.goals) {
+      const description = getMigrationNotes(goal.id, `destino: ${goal.destination}`);
+      const { data: existingGoal, error: goalSelectError } = await supabase
+        .from("goals")
+        .select("id")
+        .eq("user_id", user.id)
+        .eq("description", description)
+        .limit(1)
+        .maybeSingle();
+
+      if (goalSelectError) {
+        throw goalSelectError;
+      }
+
+      if (!existingGoal) {
+        const { error: goalInsertError } = await supabase.from("goals").insert([
+          {
+            user_id: user.id,
+            title: goal.title,
+            description,
+            target_value: normalizeSavedMiles(goal.requiredMiles),
+            current_value: 0,
+            due_date: nullIfEmpty(goal.deadline),
+            status: "active",
+          },
+        ]);
+
+        if (goalInsertError && !isDuplicateError(goalInsertError)) {
+          throw goalInsertError;
+        }
+
+        if (!goalInsertError) {
+          summary.goals += 1;
+        }
+      }
+    }
+  }
+
+  return summary;
+}
+
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [activeSection, setActiveSection] = useState<Section>("dashboard");
   const [clients, setClients] = useState<AppData[]>([]);
   const [activeClientId, setActiveClientId] = useState("");
+  const [migrationSummary, setMigrationSummary] = useState<MigrationSummary | null>(null);
+  const [migrationError, setMigrationError] = useState("");
+  const [isMigrating, setIsMigrating] = useState(false);
 
   const data = clients.find((client) => client.id === activeClientId) ?? clients[0] ?? initialData;
+  const isAdmin = Boolean(session?.user.email && adminEmails.has(session.user.email));
 
   function hydrateLocalData() {
     const loadedClients = loadData();
@@ -592,6 +1030,22 @@ export default function App() {
     await supabase.auth.signOut();
   }
 
+  async function handleManualMigration() {
+    setMigrationError("");
+    setMigrationSummary(null);
+    setIsMigrating(true);
+
+    try {
+      const summary = await migrateLocalStorageToSupabase();
+      setMigrationSummary(summary);
+    } catch (error) {
+      console.error("Falha ao migrar dados locais para o Supabase.", error);
+      setMigrationError("Nao foi possivel migrar os dados locais para o Supabase. Veja o console.");
+    } finally {
+      setIsMigrating(false);
+    }
+  }
+
   if (authLoading) {
     return (
       <div className="grid min-h-screen place-items-center bg-[#071529] px-4 py-10 text-white">
@@ -660,6 +1114,15 @@ export default function App() {
                 <Plus size={16} />
                 Cliente
               </button>
+              {isAdmin && (
+                <button
+                  className="inline-flex items-center gap-2 rounded-md border border-[#10B981] bg-transparent px-3 py-2 text-sm font-semibold text-[#10B981] shadow-sm transition hover:bg-[#10B981]/10 disabled:cursor-not-allowed disabled:opacity-70"
+                  disabled={isMigrating}
+                  onClick={handleManualMigration}
+                >
+                  {isMigrating ? "Migrando..." : "Migrar dados locais para Supabase"}
+                </button>
+              )}
               <button
                 className="inline-flex items-center gap-2 rounded-md border border-[#3B5B82] bg-[#233B5D] px-3 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-[#314863]"
                 onClick={handleLogout}
@@ -687,6 +1150,19 @@ export default function App() {
         </header>
 
         <main className="px-4 py-6 sm:px-6 lg:px-8">
+          {isAdmin && (migrationSummary || migrationError) && (
+            <div className={panelClass + " mx-auto mb-4 max-w-7xl p-4"}>
+              {migrationSummary ? (
+                <p className="text-sm text-[#CBD5E1]">
+                  Migracao concluida: {migrationSummary.cards} cartoes, {migrationSummary.pointsPrograms} pontos,{" "}
+                  {migrationSummary.milesPrograms} milhas, {migrationSummary.transfers} transferencias,{" "}
+                  {migrationSummary.redemptions} emissoes, {migrationSummary.goals} metas.
+                </p>
+              ) : (
+                <p className="text-sm font-medium text-red-300">{migrationError}</p>
+              )}
+            </div>
+          )}
           {activeSection === "dashboard" && <Dashboard data={data} goTo={setActiveSection} />}
           {activeSection === "cards" && <CardsModule data={data} updateData={updateData} />}
           {activeSection === "programs" && <ProgramsModule data={data} updateData={updateData} />}

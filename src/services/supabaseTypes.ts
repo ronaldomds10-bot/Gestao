@@ -17,6 +17,7 @@ export type ClientRow = {
   name: string;
   email: string;
   phone: string;
+  notes: string | null;
   joined_at: string | null;
   plan: string;
   created_at: string;
@@ -26,13 +27,14 @@ export type ClientRow = {
 export type CreditCardRow = {
   id: string;
   user_id: string;
-  client_id: string;
+  name: string;
   bank: string;
-  card_name: string;
-  limit_value: number;
-  points_balance: number;
-  points_per_dollar: number;
+  brand: string | null;
+  last_four: string | null;
+  closing_day: number | null;
   due_day: number;
+  annual_fee: number | null;
+  points_multiplier: number | null;
   created_at: string;
   updated_at: string;
 };
@@ -40,12 +42,10 @@ export type CreditCardRow = {
 export type PointsProgramRow = {
   id: string;
   user_id: string;
-  client_id: string;
-  type: "loyalty_points" | "bank_points";
-  program_name: string;
+  name: string;
   balance: number;
-  cpm: number;
   expiration_date: string | null;
+  notes: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -53,12 +53,11 @@ export type PointsProgramRow = {
 export type MilesProgramRow = {
   id: string;
   user_id: string;
-  client_id: string;
+  name: string;
   airline: string;
   balance: number;
-  cpm: number;
-  bonus_percentage: number;
   expiration_date: string | null;
+  notes: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -66,14 +65,14 @@ export type MilesProgramRow = {
 export type BonusTransferRow = {
   id: string;
   user_id: string;
-  client_id: string;
-  origin_program_id: string | null;
-  destination_program_id: string | null;
-  origin_program_name: string;
-  destination_program_name: string;
-  sent_amount: number;
+  points_program_id: string | null;
+  miles_program_id: string | null;
+  transferred_points: number;
   bonus_percentage: number;
-  transfer_date: string;
+  received_miles: number;
+  transfer_date: string | null;
+  status: string | null;
+  notes: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -81,16 +80,18 @@ export type BonusTransferRow = {
 export type FlightRedemptionRow = {
   id: string;
   user_id: string;
-  client_id: string;
-  redemption_date: string;
-  origin: string;
-  destination: string;
-  airline: string;
-  regular_price: number;
-  paid_price: number;
+  client_id: string | null;
+  miles_program_id: string | null;
+  origin: string | null;
+  destination: string | null;
+  departure_date: string | null;
+  return_date: string | null;
   miles_used: number;
-  cpm: number | null;
-  airport_fee: number;
+  cash_cost: number | null;
+  taxes: number | null;
+  sale_price: number | null;
+  status: string | null;
+  notes: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -98,11 +99,12 @@ export type FlightRedemptionRow = {
 export type GoalRow = {
   id: string;
   user_id: string;
-  client_id: string;
   title: string;
-  destination: string;
-  required_miles: number;
-  deadline: string | null;
+  description: string | null;
+  target_value: number | null;
+  current_value: number | null;
+  due_date: string | null;
+  status: string | null;
   created_at: string;
   updated_at: string;
 };
