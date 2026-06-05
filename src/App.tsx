@@ -137,6 +137,7 @@ const mutedTextClass = "text-[#CBD5E1]";
 const supportTextClass = "text-[#94A3B8]";
 const inputClass = "rounded border border-[#3B5B82] bg-[#233B5D] text-white placeholder:text-[#B8C7D9] outline-none transition focus:border-[#A855F7] focus:ring-4 focus:ring-[#A855F7]/20";
 const adminEmails = new Set(["ronaldomds10@gmail.com"]);
+const supabaseMigrationFlagKey = "rm-miles-hub-supabase-migrated";
 
 const airports = [
   { code: "GRU", city: "São Paulo" },
@@ -466,6 +467,67 @@ function createEmptyClient(): AppData {
   };
 }
 
+function isUuid(value: string) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+function getSourceIdFromNotes(notes: string | null | undefined) {
+  const match = notes?.match(/^Migrado do localStorage: ([^;]+)/);
+  return match?.[1] ?? "";
+}
+
+function mapSupabaseClientToAppData(
+  client: {
+    id: string;
+    name: string;
+    email: string | null;
+    phone: string | null;
+    plan: string;
+    joined_at: string | null;
+    notes: string | null;
+  },
+  fallback: AppData,
+): AppData {
+  return {
+    ...fallback,
+    id: client.id,
+    profile: {
+      ...fallback.profile,
+      name: client.name || fallback.profile.name,
+      email: client.email || fallback.profile.email,
+      phone: client.phone || "",
+      joinedAt: client.joined_at || fallback.profile.joinedAt,
+      plan: client.plan || fallback.profile.plan,
+    },
+  };
+}
+
+async function loadProfileClientsFromSupabase(userId: string) {
+  const fallbackClients = loadData();
+
+  const { data: supabaseClients, error } = await supabase
+    .from("clients")
+    .select("id, name, email, phone, plan, joined_at, notes")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: true });
+
+  if (error) {
+    throw error;
+  }
+
+  if (!supabaseClients || supabaseClients.length === 0) {
+    return fallbackClients;
+  }
+
+  return supabaseClients.map((client, index) => {
+    const sourceId = getSourceIdFromNotes(client.notes);
+    const matchingFallback = sourceId
+      ? fallbackClients.find((localClient) => localClient.id === sourceId)
+      : undefined;
+    return mapSupabaseClientToAppData(client, matchingFallback ?? fallbackClients[index] ?? createEmptyClient());
+  });
+}
+
 function getLocalStorageClientsForMigration() {
   const clientsStored = localStorage.getItem("rm-miles-hub-clients");
   if (clientsStored) {
@@ -478,6 +540,18 @@ function getLocalStorageClientsForMigration() {
   }
 
   return [] as AppData[];
+}
+
+function hasLocalStorageDataForSupabaseMigration() {
+  return Boolean(localStorage.getItem("rm-miles-hub-clients") || localStorage.getItem("rm-miles-hub-data"));
+}
+
+function hasSupabaseMigrationFlag() {
+  return localStorage.getItem(supabaseMigrationFlagKey) === "true";
+}
+
+function setSupabaseMigrationFlag() {
+  localStorage.setItem(supabaseMigrationFlagKey, "true");
 }
 
 function nullIfEmpty(value: string | undefined) {
@@ -890,6 +964,34 @@ async function migrateLocalStorageToSupabase() {
   return summary;
 }
 
+async function hasExistingSupabaseAppData(userId: string) {
+  const tables = [
+    "credit_cards",
+    "points_programs",
+    "miles_programs",
+    "bonus_transfers",
+    "flight_redemptions",
+    "goals",
+  ] as const;
+
+  for (const table of tables) {
+    const { count, error } = await supabase
+      .from(table)
+      .select("id", { count: "exact", head: true })
+      .eq("user_id", userId);
+
+    if (error) {
+      throw error;
+    }
+
+    if ((count ?? 0) > 0) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -899,18 +1001,53 @@ export default function App() {
   const [migrationSummary, setMigrationSummary] = useState<MigrationSummary | null>(null);
   const [migrationError, setMigrationError] = useState("");
   const [isMigrating, setIsMigrating] = useState(false);
+  const [autoMigrationMessage, setAutoMigrationMessage] = useState("");
 
   const data = clients.find((client) => client.id === activeClientId) ?? clients[0] ?? initialData;
   const isAdmin = Boolean(session?.user.email && adminEmails.has(session.user.email));
 
-  function hydrateLocalData() {
-    const loadedClients = loadData();
+  function setLoadedClients(loadedClients: AppData[]) {
     setClients(loadedClients);
     setActiveClientId((currentClientId) =>
       currentClientId && loadedClients.some((client) => client.id === currentClientId)
         ? currentClientId
         : loadedClients[0]?.id ?? initialData.id,
     );
+  }
+
+  function hydrateLocalData() {
+    setLoadedClients(loadData());
+  }
+
+  async function hydrateProfileClients(userId: string) {
+    try {
+      const loadedClients = await loadProfileClientsFromSupabase(userId);
+      setLoadedClients(loadedClients);
+      saveData(loadedClients);
+    } catch (error) {
+      console.error("Nao foi possivel carregar perfil/clientes do Supabase. Usando localStorage como fallback.", error);
+      hydrateLocalData();
+    }
+  }
+
+  async function runAutomaticLocalStorageMigration(userId: string) {
+    if (!hasLocalStorageDataForSupabaseMigration() || hasSupabaseMigrationFlag()) {
+      return;
+    }
+
+    try {
+      const hasExistingData = await hasExistingSupabaseAppData(userId);
+
+      if (!hasExistingData) {
+        await migrateLocalStorageToSupabase();
+      }
+
+      setSupabaseMigrationFlag();
+      setAutoMigrationMessage("Dados locais sincronizados com segurança.");
+      window.setTimeout(() => setAutoMigrationMessage(""), 5000);
+    } catch (error) {
+      console.error("Falha na migracao automatica do localStorage para o Supabase.", error);
+    }
   }
 
   useEffect(() => {
@@ -931,10 +1068,11 @@ export default function App() {
 
         if (user) {
           await ensureUserProfile(user);
+          await runAutomaticLocalStorageMigration(user.id);
+          await hydrateProfileClients(user.id);
         }
 
         if (!mounted) return;
-        hydrateLocalData();
       }
       setAuthLoading(false);
     });
@@ -955,10 +1093,11 @@ export default function App() {
 
         if (user) {
           await ensureUserProfile(user);
+          await runAutomaticLocalStorageMigration(user.id);
+          await hydrateProfileClients(user.id);
         }
 
         if (!mounted) return;
-        hydrateLocalData();
         return;
       }
 
@@ -982,14 +1121,90 @@ export default function App() {
     updateClients(clients.map((client) => (client.id === nextData.id ? nextData : client)));
   }
 
-  function addClient() {
+  async function addClient() {
     const nextClient = createEmptyClient();
+
+    try {
+      const {
+        data: { user },
+        error: userError,
+      } = await supabase.auth.getUser();
+
+      if (userError || !user) {
+        throw userError ?? new Error("Usuario autenticado nao encontrado.");
+      }
+
+      await ensureUserProfile(user);
+
+      const today = new Date().toISOString().slice(0, 10);
+      const { data: insertedClient, error: insertError } = await supabase
+        .from("clients")
+        .insert([
+          {
+            user_id: user.id,
+            name: "Novo Cliente",
+            email: user.email ?? "",
+            phone: "",
+            plan: "free",
+            joined_at: today,
+          },
+        ])
+        .select("id, name, email, phone, plan, joined_at, notes")
+        .single();
+
+      if (insertError) {
+        throw insertError;
+      }
+
+      const supabaseClient = mapSupabaseClientToAppData(insertedClient, {
+        ...nextClient,
+        profile: {
+          ...nextClient.profile,
+          email: user.email ?? "",
+          joinedAt: today,
+          plan: "free",
+        },
+      });
+
+      updateClients([...clients, supabaseClient]);
+      setActiveClientId(supabaseClient.id);
+      setActiveSection("profile");
+      return;
+    } catch (error) {
+      console.error("Nao foi possivel criar cliente no Supabase. Usando localStorage como fallback.", error);
+    }
+
     updateClients([...clients, nextClient]);
     setActiveClientId(nextClient.id);
     setActiveSection("profile");
   }
 
-  function removeClient(clientId: string) {
+  async function removeClient(clientId: string) {
+    if (isUuid(clientId)) {
+      try {
+        const {
+          data: { user },
+          error: userError,
+        } = await supabase.auth.getUser();
+
+        if (userError || !user) {
+          throw userError ?? new Error("Usuario autenticado nao encontrado.");
+        }
+
+        const { error: deleteError } = await supabase
+          .from("clients")
+          .delete()
+          .eq("id", clientId)
+          .eq("user_id", user.id);
+
+        if (deleteError) {
+          throw deleteError;
+        }
+      } catch (error) {
+        console.error("Nao foi possivel remover cliente no Supabase. Removendo apenas no fallback local.", error);
+      }
+    }
+
     const remaining = clients.filter((client) => client.id !== clientId);
     if (remaining.length === 0) {
       const nextClient = createEmptyClient();
@@ -1001,6 +1216,57 @@ export default function App() {
     if (activeClientId === clientId) {
       setActiveClientId(remaining[0].id);
     }
+  }
+
+  async function updateProfileClient(nextData: AppData) {
+    try {
+      const {
+        data: { user },
+        error: userError,
+      } = await supabase.auth.getUser();
+
+      if (userError || !user) {
+        throw userError ?? new Error("Usuario autenticado nao encontrado.");
+      }
+
+      const profile = nextData.profile;
+
+      const { error: profileError } = await supabase
+        .from("profiles")
+        .update({
+          name: profile.name,
+          full_name: profile.name,
+          email: profile.email,
+          phone: profile.phone,
+        })
+        .eq("user_id", user.id);
+
+      if (profileError) {
+        throw profileError;
+      }
+
+      if (isUuid(nextData.id)) {
+        const { error: clientError } = await supabase
+          .from("clients")
+          .update({
+            name: profile.name,
+            email: profile.email,
+            phone: profile.phone,
+            plan: profile.plan,
+            joined_at: profile.joinedAt,
+          })
+          .eq("id", nextData.id)
+          .eq("user_id", user.id);
+
+        if (clientError) {
+          throw clientError;
+        }
+      }
+    } catch (error) {
+      console.error("Nao foi possivel salvar perfil/cliente no Supabase. Salvando no fallback local.", error);
+    }
+
+    updateData(nextData);
   }
 
   async function handleLogin(email: string, password: string) {
@@ -1021,6 +1287,7 @@ export default function App() {
 
     if (user) {
       await ensureUserProfile(user);
+      await runAutomaticLocalStorageMigration(user.id);
     }
 
     return true;
@@ -1150,6 +1417,11 @@ export default function App() {
         </header>
 
         <main className="px-4 py-6 sm:px-6 lg:px-8">
+          {autoMigrationMessage && (
+            <div className="mx-auto mb-4 max-w-7xl rounded-md border border-[#10B981]/30 bg-[#10B981]/10 px-4 py-3 text-sm font-medium text-[#A7F3D0]">
+              {autoMigrationMessage}
+            </div>
+          )}
           {isAdmin && (migrationSummary || migrationError) && (
             <div className={panelClass + " mx-auto mb-4 max-w-7xl p-4"}>
               {migrationSummary ? (
@@ -1177,7 +1449,7 @@ export default function App() {
               data={data}
               removeClient={removeClient}
               setActiveClientId={setActiveClientId}
-              updateData={updateData}
+              updateData={updateProfileClient}
             />
           )}
         </main>
@@ -2248,16 +2520,17 @@ function ProfileModule({
   setActiveClientId,
   updateData,
 }: {
-  addClient: () => void;
+  addClient: () => void | Promise<void>;
   activeClientId: string;
   clients: AppData[];
   data: AppData;
-  removeClient: (clientId: string) => void;
+  removeClient: (clientId: string) => void | Promise<void>;
   setActiveClientId: (clientId: string) => void;
-  updateData: (data: AppData) => void;
+  updateData: (data: AppData) => void | Promise<void>;
 }) {
   const [profile, setProfile] = useState(data.profile);
   const [savedMessage, setSavedMessage] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
     setProfile(data.profile);
@@ -2266,13 +2539,17 @@ function ProfileModule({
   function updateProfileField(field: keyof Profile, value: string) {
     const nextProfile = { ...profile, [field]: value };
     setProfile(nextProfile);
-    updateData({ ...data, profile: nextProfile });
   }
 
-  const handleSave = () => {
-    updateData({ ...data, profile });
-    setSavedMessage(true);
-    setTimeout(() => setSavedMessage(false), 3000);
+  const handleSave = async () => {
+    setIsSaving(true);
+    try {
+      await updateData({ ...data, profile });
+      setSavedMessage(true);
+      setTimeout(() => setSavedMessage(false), 3000);
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   return (
@@ -2298,9 +2575,13 @@ function ProfileModule({
           <div></div>
         </div>
         <div className="mt-6 flex flex-wrap gap-4">
-          <button onClick={handleSave} className="inline-flex items-center gap-2 rounded bg-[#A855F7] px-5 py-3 text-sm font-semibold text-white transition hover:bg-[#9333EA]">
+          <button
+            onClick={handleSave}
+            disabled={isSaving}
+            className="inline-flex items-center gap-2 rounded bg-[#A855F7] px-5 py-3 text-sm font-semibold text-white transition hover:bg-[#9333EA] disabled:cursor-not-allowed disabled:opacity-70"
+          >
             {savedMessage && <span>✓</span>}
-            {savedMessage ? "Salvo com sucesso!" : "Salvar"}
+            {isSaving ? "Salvando..." : savedMessage ? "Salvo com sucesso!" : "Salvar"}
           </button>
           {clients.length > 1 && (
             <button
