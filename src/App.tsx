@@ -204,6 +204,7 @@ function getRedemptionCosts(redemption: FlightRedemption) {
 
 const initialData: AppData = {
   id: "client-demo-1",
+  localId: "client-demo-1",
   profile: {
     name: "Mariana Costa",
     email: "mariana@exemplo.com",
@@ -329,6 +330,7 @@ function normalizeClient(rawClient: LegacyClientData, index = 0): AppData {
     ...fallback,
     ...rawClient,
     id: rawClient.id ?? fallback.id ?? crypto.randomUUID(),
+    localId: rawClient.localId ?? rawClient.id ?? fallback.localId ?? crypto.randomUUID(),
     profile: {
       ...fallback.profile,
       ...rawClient.profile,
@@ -392,8 +394,10 @@ function saveData(clients: AppData[]) {
 }
 
 function createEmptyClient(): AppData {
+  const localId = crypto.randomUUID();
   return {
-    id: crypto.randomUUID(),
+    id: localId,
+    localId,
     profile: {
       name: "Novo Cliente",
       email: "",
@@ -414,6 +418,23 @@ function isUuid(value: string) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
+function uniqueClientsForDisplay(clients: AppData[]) {
+  const seenLocalIds = new Set<string>();
+  const seenProfiles = new Set<string>();
+  return clients.filter((client) => {
+    const localId = client.localId ?? "";
+    const profileKey = [
+      client.profile.email.trim().toLowerCase(),
+      client.profile.name.trim().toLowerCase(),
+    ].join("|");
+    if (localId && seenLocalIds.has(localId)) return false;
+    if (profileKey !== "|" && seenProfiles.has(profileKey)) return false;
+    if (localId) seenLocalIds.add(localId);
+    if (profileKey !== "|") seenProfiles.add(profileKey);
+    return true;
+  });
+}
+
 function getSourceIdFromNotes(notes: string | null | undefined) {
   const match = notes?.match(/^Migrado do localStorage: ([^;]+)/);
   return match?.[1] ?? "";
@@ -422,6 +443,7 @@ function getSourceIdFromNotes(notes: string | null | undefined) {
 function mapSupabaseClientToAppData(
   client: {
     id: string;
+    local_id?: string | null;
     name: string;
     email: string | null;
     phone: string | null;
@@ -434,6 +456,7 @@ function mapSupabaseClientToAppData(
   return {
     ...fallback,
     id: client.id,
+    localId: client.local_id ?? client.id,
     profile: {
       ...fallback.profile,
       name: client.name || fallback.profile.name,
@@ -448,7 +471,7 @@ function mapSupabaseClientToAppData(
 async function loadProfileClientsFromSupabase(userId: string) {
   const { data: supabaseClients, error } = await supabase
     .from("clients")
-    .select("id, name, email, phone, plan, joined_at, notes")
+    .select("*")
     .eq("user_id", userId)
     .order("created_at", { ascending: true });
 
@@ -460,7 +483,7 @@ async function loadProfileClientsFromSupabase(userId: string) {
     return [];
   }
 
-  const profileClients = supabaseClients.map((client) => mapSupabaseClientToAppData(client, createEmptyClient()));
+  const profileClients = uniqueClientsForDisplay((supabaseClients as Array<any>).map((client) => mapSupabaseClientToAppData(client, createEmptyClient())));
 
   return loadMileageAndPointsFromSupabase(userId, profileClients);
 }
@@ -1263,11 +1286,12 @@ export default function App() {
   const isAdmin = Boolean(session?.user.email && adminEmails.has(session.user.email));
 
   function setLoadedClients(loadedClients: AppData[]) {
-    setClients(loadedClients);
+    const uniqueClients = uniqueClientsForDisplay(loadedClients);
+    setClients(uniqueClients);
     setActiveClientId((currentClientId) =>
-      currentClientId && loadedClients.some((client) => client.id === currentClientId)
+      currentClientId && uniqueClients.some((client) => client.id === currentClientId)
         ? currentClientId
-        : loadedClients[0]?.id ?? initialData.id,
+        : uniqueClients[0]?.id ?? initialData.id,
     );
   }
 
@@ -1347,8 +1371,9 @@ export default function App() {
   }, []);
 
   function updateClients(nextClients: AppData[]) {
-    setClients(nextClients);
-    saveData(nextClients);
+    const uniqueClients = uniqueClientsForDisplay(nextClients);
+    setClients(uniqueClients);
+    saveData(uniqueClients);
   }
 
   async function getAuthenticatedUserId() {
@@ -1505,23 +1530,8 @@ export default function App() {
   async function addClient() {
     try {
       const userId = await getAuthenticatedUserId();
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
       const nextClient = createEmptyClient();
-      const today = new Date().toISOString().slice(0, 10);
-      if (user) {
-        await ensureUserProfile(user);
-      }
-      const savedClient = await saveClientToSupabase(userId, {
-        ...nextClient,
-        profile: {
-          ...nextClient.profile,
-          email: user?.email ?? "",
-          joinedAt: today,
-          plan: "free",
-        },
-      });
+      const savedClient = await saveClientToSupabase(userId, nextClient);
 
       updateClients([...clients, savedClient]);
       setActiveClientId(savedClient.id);

@@ -74,6 +74,7 @@ export type Profile = {
 
 export type AppData = {
   id: string;
+  localId?: string;
   cards: CreditCardRecord[];
   milesPrograms: MilesProgram[];
   pointsPrograms: PointsProgram[];
@@ -295,6 +296,7 @@ function getGoalDescription(goal: Goal) {
 function mapClient(row: Record<string, any>, fallback?: AppData): AppData {
   return {
     id: row.id,
+    localId: row.local_id ?? row.id,
     cards: fallback?.cards ?? [],
     milesPrograms: fallback?.milesPrograms ?? [],
     pointsPrograms: fallback?.pointsPrograms ?? [],
@@ -313,6 +315,23 @@ function mapClient(row: Record<string, any>, fallback?: AppData): AppData {
 
 function firstClientId(clients: AppData[]) {
   return clients[0]?.id ?? null;
+}
+
+function uniqueClients(clients: AppData[]) {
+  const seenLocalIds = new Set<string>();
+  const seenProfiles = new Set<string>();
+  return clients.filter((client) => {
+    const localId = client.localId ?? "";
+    const profileKey = [
+      client.profile.email.trim().toLowerCase(),
+      client.profile.name.trim().toLowerCase(),
+    ].join("|");
+    if (localId && seenLocalIds.has(localId)) return false;
+    if (profileKey !== "|" && seenProfiles.has(profileKey)) return false;
+    if (localId) seenLocalIds.add(localId);
+    if (profileKey !== "|") seenProfiles.add(profileKey);
+    return true;
+  });
 }
 
 async function loadTable(table: TableName, userId: string) {
@@ -409,7 +428,7 @@ export async function loadUserDataFromSupabase(userId: string, fallbackClients: 
   ]);
 
   const clients = clientRows.length > 0
-    ? clientRows.map((row, index) => mapClient(row, fallbackClients[index]))
+    ? uniqueClients(clientRows.map((row, index) => mapClient(row, fallbackClients[index])))
     : fallbackClients;
   const defaultClientId = firstClientId(clients);
   const clientMap = new Map(clients.map((client) => [client.id, client]));
@@ -540,10 +559,12 @@ export async function loadUserDataFromSupabase(userId: string, fallbackClients: 
 
 export async function saveClientToSupabase(userId: string, client: AppData) {
   const idPayload = isUuid(client.id) ? { id: client.id } : {};
+  const recordLocalId = localId(client);
   const profile = client.profile;
   const primaryPayload = {
     ...idPayload,
     user_id: userId,
+    local_id: recordLocalId,
     name: profile.name,
     email: profile.email,
     phone: profile.phone,
@@ -552,9 +573,66 @@ export async function saveClientToSupabase(userId: string, client: AppData) {
   };
 
   ensureOnline();
+  const updateClientById = async (recordId: string, payload = primaryPayload) => {
+    const { data, error } = await supabase
+      .from("clients")
+      .update(payload as never)
+      .eq("id", recordId)
+      .eq("user_id", userId)
+      .select("id")
+      .single();
+
+    if (error) {
+      throwSupabaseError("clients.update", error, payload);
+    }
+
+    return { ...client, localId: recordLocalId, id: data.id as string };
+  };
+
+  if (isUuid(client.id)) {
+    const { data, error } = await supabase
+      .from("clients")
+      .update(primaryPayload as never)
+      .eq("id", client.id)
+      .eq("user_id", userId)
+      .select("id")
+      .single();
+
+    if (!error) {
+      return { ...client, localId: recordLocalId, id: data.id as string };
+    }
+
+    if (!isNoRowsError(error)) {
+      throwSupabaseError("clients.update", error, primaryPayload);
+    }
+  }
+
+  if (profile.email.trim() || profile.name.trim()) {
+    const { data: existingClient, error: existingError } = await supabase
+      .from("clients")
+      .select("id")
+      .eq("user_id", userId)
+      .eq("email", profile.email)
+      .eq("name", profile.name)
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+
+    if (existingError) {
+      throwSupabaseError("clients.findExisting", existingError, primaryPayload);
+    }
+
+    if (existingClient?.id) {
+      return updateClientById(existingClient.id as string, {
+        ...primaryPayload,
+        id: existingClient.id,
+      });
+    }
+  }
+
   const { data, error } = await supabase
     .from("clients")
-    .upsert([primaryPayload as never])
+    .upsert([primaryPayload as never], { onConflict: "user_id,local_id" })
     .select("id")
     .single();
 
@@ -563,7 +641,7 @@ export async function saveClientToSupabase(userId: string, client: AppData) {
   }
 
   const id = data.id as string;
-  return { ...client, id };
+  return { ...client, localId: recordLocalId, id };
 }
 
 export async function saveCardToSupabase(userId: string, clientId: string, card: CreditCardRecord) {
