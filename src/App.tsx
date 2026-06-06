@@ -2981,7 +2981,7 @@ function RedemptionsModule({
               <Td>{redemption.origin} - {redemption.destination}</Td>
               <Td>{redemption.airline}</Td>
               <Td>{currency.format(redemption.regularPrice)}</Td>
-              <Td>{formatMileagePoints(redemption.milesUsed)}</Td>
+              <Td>{formatMiles(redemption.milesUsed)}</Td>
               <Td>{redemption.cpm !== undefined ? formatCpm(redemption.cpm) : "-"}</Td>
               <Td>{currency.format(costs.airportFee)}</Td>
               <Td>{currency.format(costs.totalCost)}</Td>
