@@ -1913,7 +1913,7 @@ function Dashboard({ data, goTo }: { data: AppData; goTo: (section: Section) => 
     <div className="mx-auto max-w-7xl">
       <SectionHeader
         eyebrow="Dashboard principal"
-        title={`Bem-vindo, ${data.profile.name.split(" ")[0]}`}
+        title={`Olá, ${data.profile.name.split(" ")[0]} `}
         description="Acompanhe seu patrimonio em milhas, economias geradas e metas de viagem em uma unica tela."
       />
 
