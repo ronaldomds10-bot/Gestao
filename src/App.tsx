@@ -613,6 +613,10 @@ function getTransferNotes(transfer: BonusTransfer) {
   );
 }
 
+function createLocalId() {
+  return crypto.randomUUID();
+}
+
 function getPointsProgramSaveKey(program: PointsProgram) {
   return [
     program.type,
@@ -627,6 +631,25 @@ function uniquePointProgramsForSave(programs: PointsProgram[]) {
   const seen = new Set<string>();
   return programs.filter((program) => {
     const key = getPointsProgramSaveKey(program);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function getMilesProgramSaveKey(program: MilesProgram) {
+  return [
+    program.airline.trim().toLowerCase(),
+    Math.max(0, Math.round(program.balance)),
+    parseCpmInput(program.cpm),
+    program.expirationDate || "",
+  ].join("|");
+}
+
+function uniqueMilesProgramsForSave(programs: MilesProgram[]) {
+  const seen = new Set<string>();
+  return programs.filter((program) => {
+    const key = getMilesProgramSaveKey(program);
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -1341,68 +1364,122 @@ export default function App() {
     return user.id;
   }
 
-  async function persistAppData(previousData: AppData, nextData: AppData) {
-    const userId = await getAuthenticatedUserId();
+  async function persistAppData(_previousData: AppData, nextData: AppData) {
+    return nextData;
+  }
 
-    const removedTransfers = previousData.transfers.filter((item) => !nextData.transfers.some((nextItem) => nextItem.id === item.id));
-    const removedCards = previousData.cards.filter((item) => !nextData.cards.some((nextItem) => nextItem.id === item.id));
-    const removedRedemptions = previousData.redemptions.filter((item) => !nextData.redemptions.some((nextItem) => nextItem.id === item.id));
-    const removedGoals = previousData.goals.filter((item) => !nextData.goals.some((nextItem) => nextItem.id === item.id));
-    const removedPoints = previousData.pointsPrograms.filter((item) => !nextData.pointsPrograms.some((nextItem) => nextItem.id === item.id));
-    const removedMiles = previousData.milesPrograms.filter((item) => !nextData.milesPrograms.some((nextItem) => nextItem.id === item.id));
-
-    for (const transfer of removedTransfers) {
-      await deleteRecordFromSupabase("bonus_transfers", userId, transfer.id);
-    }
-    for (const card of removedCards) {
-      await deleteRecordFromSupabase("credit_cards", userId, card.id);
-    }
-    for (const redemption of removedRedemptions) {
-      await deleteRecordFromSupabase("flight_redemptions", userId, redemption.id);
-    }
-    for (const goal of removedGoals) {
-      await deleteRecordFromSupabase("goals", userId, goal.id);
-    }
-    for (const program of removedPoints) {
-      await deleteRecordFromSupabase("points_programs", userId, program.id);
-    }
-    for (const program of removedMiles) {
-      await deleteRecordFromSupabase("miles_programs", userId, program.id);
+  async function runSingleRecordSync<T>(context: string, callback: (userId: string) => Promise<T>) {
+    if (isSavingDataRef.current) {
+      return null;
     }
 
-    const syncedData: AppData = {
-      ...nextData,
-      cards: [],
-      pointsPrograms: [],
-      milesPrograms: [],
-      transfers: [],
-      redemptions: [],
-      goals: [],
-    };
+    isSavingDataRef.current = true;
 
-    const savedClient = await saveClientToSupabase(userId, nextData);
-    syncedData.id = savedClient.id;
+    try {
+      const userId = await getAuthenticatedUserId();
+      return await callback(userId);
+    } catch (error) {
+      handleSupabaseError(context, error);
+      return null;
+    } finally {
+      isSavingDataRef.current = false;
+    }
+  }
 
-    for (const card of nextData.cards) {
-      syncedData.cards.push(await saveCardToSupabase(userId, syncedData.id, card));
-    }
-    for (const program of uniquePointProgramsForSave(nextData.pointsPrograms)) {
-      syncedData.pointsPrograms.push(await savePointsProgramToSupabase(userId, syncedData.id, program));
-    }
-    for (const program of nextData.milesPrograms) {
-      syncedData.milesPrograms.push(await saveMilesProgramToSupabase(userId, syncedData.id, program));
-    }
-    for (const transfer of nextData.transfers) {
-      syncedData.transfers.push(await saveTransferToSupabase(userId, syncedData.id, transfer, syncedData.pointsPrograms, syncedData.milesPrograms));
-    }
-    for (const redemption of nextData.redemptions) {
-      syncedData.redemptions.push(await saveRedemptionToSupabase(userId, syncedData.id, redemption));
-    }
-    for (const goal of nextData.goals) {
-      syncedData.goals.push(await saveGoalToSupabase(userId, syncedData.id, goal));
-    }
+  async function createCard(card: CreditCardRecord) {
+    return runSingleRecordSync("credit_cards.create", (userId) => saveCardToSupabase(userId, data.id, card));
+  }
 
-    return syncedData;
+  async function updateCard(card: CreditCardRecord) {
+    return runSingleRecordSync("credit_cards.update", (userId) => saveCardToSupabase(userId, data.id, card));
+  }
+
+  async function deleteCard(card: CreditCardRecord) {
+    if (!isUuid(card.id)) {
+      console.warn("Cartao sem id real do Supabase. Removendo apenas do estado/cache.", card.id);
+      return true;
+    }
+    return Boolean(await runSingleRecordSync("credit_cards.delete", (userId) => deleteRecordFromSupabase("credit_cards", userId, card.id).then(() => true)));
+  }
+
+  async function createPointsProgram(program: PointsProgram) {
+    return runSingleRecordSync("points_programs.create", (userId) => savePointsProgramToSupabase(userId, data.id, program));
+  }
+
+  async function updatePointsProgram(program: PointsProgram) {
+    return runSingleRecordSync("points_programs.update", (userId) => savePointsProgramToSupabase(userId, data.id, program));
+  }
+
+  async function deletePointsProgram(program: PointsProgram) {
+    if (!isUuid(program.id)) {
+      console.warn("Programa de pontos sem id real do Supabase. Removendo apenas do estado/cache.", program.id);
+      return true;
+    }
+    return Boolean(await runSingleRecordSync("points_programs.delete", (userId) => deleteRecordFromSupabase("points_programs", userId, program.id).then(() => true)));
+  }
+
+  async function createMilesProgram(program: MilesProgram) {
+    return runSingleRecordSync("miles_programs.create", (userId) => saveMilesProgramToSupabase(userId, data.id, program));
+  }
+
+  async function updateMilesProgram(program: MilesProgram) {
+    return runSingleRecordSync("miles_programs.update", (userId) => saveMilesProgramToSupabase(userId, data.id, program));
+  }
+
+  async function deleteMilesProgram(program: MilesProgram) {
+    if (!isUuid(program.id)) {
+      console.warn("Programa de milhas sem id real do Supabase. Removendo apenas do estado/cache.", program.id);
+      return true;
+    }
+    return Boolean(await runSingleRecordSync("miles_programs.delete", (userId) => deleteRecordFromSupabase("miles_programs", userId, program.id).then(() => true)));
+  }
+
+  async function createTransfer(transfer: BonusTransfer, pointsPrograms = data.pointsPrograms, milesPrograms = data.milesPrograms) {
+    return runSingleRecordSync("bonus_transfers.create", (userId) => saveTransferToSupabase(userId, data.id, transfer, pointsPrograms, milesPrograms));
+  }
+
+  async function updateTransfer(transfer: BonusTransfer, pointsPrograms = data.pointsPrograms, milesPrograms = data.milesPrograms) {
+    return runSingleRecordSync("bonus_transfers.update", (userId) => saveTransferToSupabase(userId, data.id, transfer, pointsPrograms, milesPrograms));
+  }
+
+  async function deleteTransfer(transfer: BonusTransfer) {
+    if (!isUuid(transfer.id)) {
+      console.warn("Transferencia sem id real do Supabase. Removendo apenas do estado/cache.", transfer.id);
+      return true;
+    }
+    return Boolean(await runSingleRecordSync("bonus_transfers.delete", (userId) => deleteRecordFromSupabase("bonus_transfers", userId, transfer.id).then(() => true)));
+  }
+
+  async function createRedemption(redemption: FlightRedemption) {
+    return runSingleRecordSync("flight_redemptions.create", (userId) => saveRedemptionToSupabase(userId, data.id, redemption));
+  }
+
+  async function updateRedemption(redemption: FlightRedemption) {
+    return runSingleRecordSync("flight_redemptions.update", (userId) => saveRedemptionToSupabase(userId, data.id, redemption));
+  }
+
+  async function deleteRedemption(redemption: FlightRedemption) {
+    if (!isUuid(redemption.id)) {
+      console.warn("Emissao sem id real do Supabase. Removendo apenas do estado/cache.", redemption.id);
+      return true;
+    }
+    return Boolean(await runSingleRecordSync("flight_redemptions.delete", (userId) => deleteRecordFromSupabase("flight_redemptions", userId, redemption.id).then(() => true)));
+  }
+
+  async function createGoal(goal: Goal) {
+    return runSingleRecordSync("goals.create", (userId) => saveGoalToSupabase(userId, data.id, goal));
+  }
+
+  async function updateGoal(goal: Goal) {
+    return runSingleRecordSync("goals.update", (userId) => saveGoalToSupabase(userId, data.id, goal));
+  }
+
+  async function deleteGoal(goal: Goal) {
+    if (!isUuid(goal.id)) {
+      console.warn("Meta sem id real do Supabase. Removendo apenas do estado/cache.", goal.id);
+      return true;
+    }
+    return Boolean(await runSingleRecordSync("goals.delete", (userId) => deleteRecordFromSupabase("goals", userId, goal.id).then(() => true)));
   }
 
   async function updateData(nextData: AppData) {
@@ -1720,11 +1797,25 @@ export default function App() {
             </div>
           )}
           {activeSection === "dashboard" && <Dashboard data={data} goTo={setActiveSection} />}
-          {activeSection === "cards" && <CardsModule data={data} updateData={updateData} />}
-          {activeSection === "programs" && <ProgramsModule data={data} updateData={updateData} />}
+          {activeSection === "cards" && <CardsModule data={data} updateData={updateData} createCard={createCard} updateCard={updateCard} deleteCard={deleteCard} />}
+          {activeSection === "programs" && (
+            <ProgramsModule
+              data={data}
+              updateData={updateData}
+              createPointsProgram={createPointsProgram}
+              updatePointsProgram={updatePointsProgram}
+              deletePointsProgramRecord={deletePointsProgram}
+              createMilesProgram={createMilesProgram}
+              updateMilesProgram={updateMilesProgram}
+              deleteMilesProgram={deleteMilesProgram}
+              createTransfer={createTransfer}
+              updateTransfer={updateTransfer}
+              deleteTransferRecord={deleteTransfer}
+            />
+          )}
           {activeSection === "economies" && <EconomiesModule data={data} />}
-          {activeSection === "goals" && <GoalsModule data={data} updateData={updateData} />}
-          {activeSection === "redemptions" && <RedemptionsModule data={data} updateData={updateData} />}
+          {activeSection === "goals" && <GoalsModule data={data} updateData={updateData} createGoal={createGoal} updateGoal={updateGoal} deleteGoal={deleteGoal} />}
+          {activeSection === "redemptions" && <RedemptionsModule data={data} updateData={updateData} createRedemption={createRedemption} updateRedemption={updateRedemption} deleteRedemption={deleteRedemption} />}
           {activeSection === "profile" && (
             <ProfileModule
               addClient={addClient}
@@ -1971,29 +2062,50 @@ function Dashboard({ data, goTo }: { data: AppData; goTo: (section: Section) => 
   );
 }
 
-function CardsModule({ data, updateData }: { data: AppData; updateData: (data: AppData) => Promise<boolean> }) {
+function CardsModule({
+  data,
+  updateData,
+  createCard,
+  updateCard,
+  deleteCard,
+}: {
+  data: AppData;
+  updateData: (data: AppData) => Promise<boolean>;
+  createCard: (card: CreditCardRecord) => Promise<CreditCardRecord | null>;
+  updateCard: (card: CreditCardRecord) => Promise<CreditCardRecord | null>;
+  deleteCard: (card: CreditCardRecord) => Promise<boolean>;
+}) {
   const total = data.cards.reduce((sum, card) => sum + card.pointsBalance, 0);
   const [draft, setDraft] = useState({ bank: "", cardName: "", limitValue: "", pointsBalance: "", pointsPerDollar: "", dueDay: "" });
+  void updateCard;
 
   async function addCard() {
     if (!draft.bank || !draft.cardName) return;
+    const card: CreditCardRecord = {
+      id: crypto.randomUUID(),
+      localId: createLocalId(),
+      bank: draft.bank,
+      cardName: draft.cardName,
+      limitValue: Number(draft.limitValue),
+      pointsBalance: Number(draft.pointsBalance),
+      pointsPerDollar: Number(draft.pointsPerDollar),
+      dueDay: Number(draft.dueDay),
+    };
+    const savedCard = await createCard(card);
+    if (!savedCard) return;
     const saved = await updateData({
       ...data,
-      cards: [
-        ...data.cards,
-        {
-          id: crypto.randomUUID(),
-          bank: draft.bank,
-          cardName: draft.cardName,
-          limitValue: Number(draft.limitValue),
-          pointsBalance: Number(draft.pointsBalance),
-          pointsPerDollar: Number(draft.pointsPerDollar),
-          dueDay: Number(draft.dueDay),
-        },
-      ],
+      cards: [...data.cards, savedCard],
     });
     if (saved) {
       setDraft({ bank: "", cardName: "", limitValue: "", pointsBalance: "", pointsPerDollar: "", dueDay: "" });
+    }
+  }
+
+  async function removeCard(card: CreditCardRecord) {
+    const deleted = await deleteCard(card);
+    if (deleted) {
+      await updateData({ ...data, cards: data.cards.filter((item) => item.id !== card.id) });
     }
   }
 
@@ -2017,7 +2129,7 @@ function CardsModule({ data, updateData }: { data: AppData; updateData: (data: A
             <Td>{number.format(card.pointsBalance)}</Td>
             <Td>{card.pointsPerDollar}</Td>
             <Td>Dia {card.dueDay}</Td>
-            <Td align="right"><DeleteButton onClick={() => updateData({ ...data, cards: data.cards.filter((item) => item.id !== card.id) })} /></Td>
+            <Td align="right"><DeleteButton onClick={() => removeCard(card)} /></Td>
           </tr>
         ))}
       </DataTable>
@@ -2025,7 +2137,31 @@ function CardsModule({ data, updateData }: { data: AppData; updateData: (data: A
   );
 }
 
-function ProgramsModule({ data, updateData }: { data: AppData; updateData: (data: AppData) => Promise<boolean> }) {
+function ProgramsModule({
+  data,
+  updateData,
+  createPointsProgram,
+  updatePointsProgram,
+  deletePointsProgramRecord,
+  createMilesProgram,
+  updateMilesProgram,
+  deleteMilesProgram,
+  createTransfer,
+  updateTransfer,
+  deleteTransferRecord,
+}: {
+  data: AppData;
+  updateData: (data: AppData) => Promise<boolean>;
+  createPointsProgram: (program: PointsProgram) => Promise<PointsProgram | null>;
+  updatePointsProgram: (program: PointsProgram) => Promise<PointsProgram | null>;
+  deletePointsProgramRecord: (program: PointsProgram) => Promise<boolean>;
+  createMilesProgram: (program: MilesProgram) => Promise<MilesProgram | null>;
+  updateMilesProgram: (program: MilesProgram) => Promise<MilesProgram | null>;
+  deleteMilesProgram: (program: MilesProgram) => Promise<boolean>;
+  createTransfer: (transfer: BonusTransfer, pointsPrograms?: PointsProgram[], milesPrograms?: MilesProgram[]) => Promise<BonusTransfer | null>;
+  updateTransfer: (transfer: BonusTransfer, pointsPrograms?: PointsProgram[], milesPrograms?: MilesProgram[]) => Promise<BonusTransfer | null>;
+  deleteTransferRecord: (transfer: BonusTransfer) => Promise<boolean>;
+}) {
   const [draftMiles, setDraftMiles] = useState({
     airline: "Smiles",
     customAirline: "",
@@ -2095,24 +2231,46 @@ function ProgramsModule({ data, updateData }: { data: AppData; updateData: (data
     const previousMilesProgram = data.milesPrograms.find((program) => program.id === draftMiles.editingMilesId);
     const milesProgram: MilesProgram = {
       id: draftMiles.editingMilesId || crypto.randomUUID(),
+      localId: previousMilesProgram?.localId ?? createLocalId(),
       airline: airlineName,
       balance: Number(draftMiles.balance),
       cpm: parseCpmInput(draftMiles.cpm),
       bonusPercentage: 0,
       expirationDate: draftMiles.expirationDate,
     };
+    const savedMilesProgram = draftMiles.editingMilesId
+      ? await updateMilesProgram(milesProgram)
+      : await createMilesProgram(milesProgram);
+    if (!savedMilesProgram) return;
+
+    const nextTransfers = previousMilesProgram && previousMilesProgram.airline !== airlineName
+      ? data.transfers.map((transfer) => (
+          transfer.destinationProgramName === previousMilesProgram.airline
+            ? { ...transfer, destinationProgramName: airlineName }
+            : transfer
+        ))
+      : data.transfers;
+
+    const syncedTransfers: BonusTransfer[] = [];
+    for (const transfer of nextTransfers) {
+      const previousTransfer = data.transfers.find((item) => item.id === transfer.id);
+      if (previousTransfer && previousTransfer.destinationProgramName !== transfer.destinationProgramName) {
+        const savedTransfer = await updateTransfer(transfer, data.pointsPrograms, draftMiles.editingMilesId
+          ? data.milesPrograms.map((program) => (program.id === draftMiles.editingMilesId ? savedMilesProgram : program))
+          : [...data.milesPrograms, savedMilesProgram]);
+        if (!savedTransfer) return;
+        syncedTransfers.push(savedTransfer);
+      } else {
+        syncedTransfers.push(transfer);
+      }
+    }
+
     const saved = await updateData({
       ...data,
       milesPrograms: draftMiles.editingMilesId
-        ? data.milesPrograms.map((program) => (program.id === draftMiles.editingMilesId ? milesProgram : program))
-        : [...data.milesPrograms, milesProgram],
-      transfers: previousMilesProgram && previousMilesProgram.airline !== airlineName
-        ? data.transfers.map((transfer) => (
-            transfer.destinationProgramName === previousMilesProgram.airline
-              ? { ...transfer, destinationProgramName: airlineName }
-              : transfer
-          ))
-        : data.transfers,
+        ? data.milesPrograms.map((program) => (program.id === draftMiles.editingMilesId ? savedMilesProgram : program))
+        : [...data.milesPrograms, savedMilesProgram],
+      transfers: syncedTransfers,
     });
     if (saved) {
       resetMilesDraft();
@@ -2159,6 +2317,7 @@ function ProgramsModule({ data, updateData }: { data: AppData; updateData: (data
 
     const pointRecord: PointsProgram = {
       id: crypto.randomUUID(),
+      localId: createLocalId(),
       type: draftPoints.type,
       programName,
       balance: sentPoints,
@@ -2167,6 +2326,7 @@ function ProgramsModule({ data, updateData }: { data: AppData; updateData: (data
     };
     const transferRecord: BonusTransfer = {
       id: draftPoints.editingTransferId || crypto.randomUUID(),
+      localId: previousTransfer?.localId ?? createLocalId(),
       originProgramName: programName,
       destinationProgramName,
       sentAmount: sentPoints,
@@ -2174,34 +2334,56 @@ function ProgramsModule({ data, updateData }: { data: AppData; updateData: (data
       date: new Date().toISOString().slice(0, 10),
     };
     const shouldSaveTransfer = Boolean(draftPoints.editingTransferId) || !draftPoints.editingPointId;
-    const pointsPrograms = originProgram
+    const pointDrafts = originProgram
       ? data.pointsPrograms.map((program, index) => (
           index === originIndex
             ? { ...program, type: draftPoints.type, programName, balance: draftPoints.editingTransferId ? program.balance : sentPoints, cpm: parseCpmInput(draftPoints.cpm), expirationDate: draftPoints.expirationDate }
             : program
         ))
       : [...data.pointsPrograms, pointRecord];
+    const pointToSave = originProgram ? pointDrafts[originIndex] : pointRecord;
+    const savedPoint = originProgram
+      ? await updatePointsProgram(pointToSave)
+      : await createPointsProgram(pointToSave);
+    if (!savedPoint) return;
+
+    const pointsPrograms = originProgram
+      ? pointDrafts.map((program) => (program.id === savedPoint.id || program.localId === savedPoint.localId ? savedPoint : program))
+      : [...data.pointsPrograms, savedPoint];
+
     const destinationExists = data.milesPrograms.some((program) => program.airline === destinationProgramName);
+    const destinationDraft: MilesProgram | null = !shouldSaveTransfer || destinationExists
+      ? null
+      : {
+          id: crypto.randomUUID(),
+          localId: createLocalId(),
+          airline: destinationProgramName,
+          balance: 0,
+          cpm: airlineDefaultCpm[destinationProgramName] ?? 0.04,
+          bonusPercentage: 0,
+          expirationDate: draftPoints.expirationDate,
+        };
+    const savedDestination = destinationDraft ? await createMilesProgram(destinationDraft) : null;
+    if (destinationDraft && !savedDestination) return;
+
     const milesPrograms = !shouldSaveTransfer
       ? data.milesPrograms
       : destinationExists
       ? data.milesPrograms
-      : [
-          ...data.milesPrograms,
-          {
-            id: crypto.randomUUID(),
-            airline: destinationProgramName,
-            balance: 0,
-            cpm: airlineDefaultCpm[destinationProgramName] ?? 0.04,
-            bonusPercentage: 0,
-            expirationDate: draftPoints.expirationDate,
-          },
-        ];
+      : [...data.milesPrograms, savedDestination as MilesProgram];
+
+    const savedTransfer = shouldSaveTransfer
+      ? draftPoints.editingTransferId
+        ? await updateTransfer(transferRecord, pointsPrograms, milesPrograms)
+        : await createTransfer(transferRecord, pointsPrograms, milesPrograms)
+      : null;
+    if (shouldSaveTransfer && !savedTransfer) return;
+
     const transfers = !shouldSaveTransfer
       ? data.transfers
       : draftPoints.editingTransferId
-      ? data.transfers.map((transfer) => (transfer.id === transferRecord.id ? transferRecord : transfer))
-      : [...data.transfers, transferRecord];
+      ? data.transfers.map((transfer) => (transfer.id === transferRecord.id ? savedTransfer as BonusTransfer : transfer))
+      : [...data.transfers, savedTransfer as BonusTransfer];
 
     const saved = await updateData({ ...data, pointsPrograms, milesPrograms, transfers });
     if (saved) {
@@ -2267,16 +2449,37 @@ function ProgramsModule({ data, updateData }: { data: AppData; updateData: (data
     });
   }
 
-  function deleteTransfer(transferId: string) {
-    updateData({ ...data, transfers: data.transfers.filter((transfer) => transfer.id !== transferId) });
+  async function deleteTransfer(transferId: string) {
+    const transfer = data.transfers.find((item) => item.id === transferId);
+    if (!transfer) return;
+    const deleted = await deleteTransferRecord(transfer);
+    if (deleted) {
+      await updateData({ ...data, transfers: data.transfers.filter((item) => item.id !== transferId) });
+    }
   }
 
-  function deletePointsProgram(programId: string, programName: string) {
-    updateData({
+  async function deletePointsProgram(programId: string, programName: string) {
+    const program = data.pointsPrograms.find((item) => item.id === programId);
+    if (!program) return;
+    const relatedTransfers = data.transfers.filter((transfer) => transfer.originProgramName === programName);
+    for (const transfer of relatedTransfers) {
+      const deletedTransfer = await deleteTransferRecord(transfer);
+      if (!deletedTransfer) return;
+    }
+    const deletedProgram = await deletePointsProgramRecord(program);
+    if (!deletedProgram) return;
+    await updateData({
       ...data,
       pointsPrograms: data.pointsPrograms.filter((item) => item.id !== programId),
       transfers: data.transfers.filter((transfer) => transfer.originProgramName !== programName),
     });
+  }
+
+  async function removeMilesProgram(program: MilesProgram) {
+    const deleted = await deleteMilesProgram(program);
+    if (deleted) {
+      await updateData({ ...data, milesPrograms: data.milesPrograms.filter((item) => item.id !== program.id) });
+    }
   }
 
   const transferDestinationOptions = Array.from(
@@ -2420,7 +2623,7 @@ function ProgramsModule({ data, updateData }: { data: AppData; updateData: (data
                     <button onClick={() => editMilesProgram(program)} className="inline-flex h-9 w-9 items-center justify-center rounded text-[#CBD5E1] transition hover:bg-[#233B5D]" title="Editar milhas">
                       <Pencil size={16} />
                     </button>
-                    <DeleteButton onClick={() => updateData({ ...data, milesPrograms: data.milesPrograms.filter((item) => item.id !== program.id) })} />
+                    <DeleteButton onClick={() => removeMilesProgram(program)} />
                   </div>
                 </Td>
               </tr>
@@ -2500,6 +2703,7 @@ function LegacyProgramsModule({ data, updateData }: { data: AppData; updateData:
       ...data,
       milesPrograms: [...data.milesPrograms, {
         id: crypto.randomUUID(),
+        localId: createLocalId(),
         airline: draftMiles.airline,
         balance: Number(draftMiles.balance),
         cpm: parseCpmInput(draftMiles.cpm),
@@ -2516,6 +2720,7 @@ function LegacyProgramsModule({ data, updateData }: { data: AppData; updateData:
       ...data,
       pointsPrograms: [...data.pointsPrograms, {
         id: crypto.randomUUID(),
+        localId: createLocalId(),
         type: draftPoints.type,
         programName: draftPoints.programName,
         balance: Number(draftPoints.balance),
@@ -2593,7 +2798,19 @@ function LegacyProgramsModule({ data, updateData }: { data: AppData; updateData:
   );
 }
 
-function RedemptionsModule({ data, updateData }: { data: AppData; updateData: (data: AppData) => Promise<boolean> }) {
+function RedemptionsModule({
+  data,
+  updateData,
+  createRedemption,
+  updateRedemption,
+  deleteRedemption,
+}: {
+  data: AppData;
+  updateData: (data: AppData) => Promise<boolean>;
+  createRedemption: (redemption: FlightRedemption) => Promise<FlightRedemption | null>;
+  updateRedemption: (redemption: FlightRedemption) => Promise<FlightRedemption | null>;
+  deleteRedemption: (redemption: FlightRedemption) => Promise<boolean>;
+}) {
   const [draft, setDraft] = useState({ date: "", origin: "", destination: "", airline: "", regularPrice: "", milesUsed: "", cpm: "", airportFee: "", editingRedemptionId: "" });
   const [showOriginSuggestions, setShowOriginSuggestions] = useState(false);
   const [showDestinationSuggestions, setShowDestinationSuggestions] = useState(false);
@@ -2609,6 +2826,7 @@ function RedemptionsModule({ data, updateData }: { data: AppData; updateData: (d
     const totalCost = milesUsed * cpm + airportFee;
     const redemption: FlightRedemption = {
       id: draft.editingRedemptionId || crypto.randomUUID(),
+      localId: data.redemptions.find((item) => item.id === draft.editingRedemptionId)?.localId ?? createLocalId(),
       date: draft.date,
       origin: draft.origin,
       destination: draft.destination,
@@ -2619,11 +2837,15 @@ function RedemptionsModule({ data, updateData }: { data: AppData; updateData: (d
       cpm,
       airportFee,
     };
+    const savedRedemption = draft.editingRedemptionId
+      ? await updateRedemption(redemption)
+      : await createRedemption(redemption);
+    if (!savedRedemption) return;
     const saved = await updateData({
       ...data,
       redemptions: draft.editingRedemptionId
-        ? data.redemptions.map((item) => (item.id === draft.editingRedemptionId ? redemption : item))
-        : [...data.redemptions, redemption],
+        ? data.redemptions.map((item) => (item.id === draft.editingRedemptionId ? savedRedemption : item))
+        : [...data.redemptions, savedRedemption],
     });
     if (saved) {
       resetRedemptionDraft();
@@ -2647,6 +2869,13 @@ function RedemptionsModule({ data, updateData }: { data: AppData; updateData: (d
       airportFee: String(costs.airportFee),
       editingRedemptionId: redemption.id,
     });
+  }
+
+  async function removeRedemption(redemption: FlightRedemption) {
+    const deleted = await deleteRedemption(redemption);
+    if (deleted) {
+      await updateData({ ...data, redemptions: data.redemptions.filter((item) => item.id !== redemption.id) });
+    }
   }
 
   return (
@@ -2715,7 +2944,7 @@ function RedemptionsModule({ data, updateData }: { data: AppData; updateData: (d
                   <button onClick={() => editRedemption(redemption)} className="inline-flex h-9 w-9 items-center justify-center rounded text-[#CBD5E1] transition hover:bg-[#233B5D]" title="Editar emissão">
                     <Pencil size={16} />
                   </button>
-                  <DeleteButton onClick={() => updateData({ ...data, redemptions: data.redemptions.filter((item) => item.id !== redemption.id) })} />
+                  <DeleteButton onClick={() => removeRedemption(redemption)} />
                 </div>
               </Td>
             </tr>
@@ -2752,15 +2981,48 @@ function EconomiesModule({ data }: { data: AppData }) {
   );
 }
 
-function GoalsModule({ data, updateData }: { data: AppData; updateData: (data: AppData) => Promise<boolean> }) {
+function GoalsModule({
+  data,
+  updateData,
+  createGoal,
+  updateGoal,
+  deleteGoal,
+}: {
+  data: AppData;
+  updateData: (data: AppData) => Promise<boolean>;
+  createGoal: (goal: Goal) => Promise<Goal | null>;
+  updateGoal: (goal: Goal) => Promise<Goal | null>;
+  deleteGoal: (goal: Goal) => Promise<boolean>;
+}) {
   const totalMiles = useMetrics(data).milesBase;
   const [draft, setDraft] = useState({ title: "", destination: "", requiredMiles: "", deadline: "" });
+  void updateGoal;
 
   async function addGoal() {
     if (!draft.title || !draft.destination || !draft.requiredMiles || !draft.deadline) return;
-    const saved = await updateData({ ...data, goals: [...data.goals, { id: crypto.randomUUID(), title: draft.title, destination: draft.destination, requiredMiles: parseMilesInput(draft.requiredMiles), deadline: draft.deadline }] });
+    const goal: Goal = {
+      id: crypto.randomUUID(),
+      localId: createLocalId(),
+      title: draft.title,
+      destination: draft.destination,
+      requiredMiles: parseMilesInput(draft.requiredMiles),
+      deadline: draft.deadline,
+    };
+    const savedGoal = await createGoal(goal);
+    if (!savedGoal) return;
+    const saved = await updateData({
+      ...data,
+      goals: [...data.goals, savedGoal],
+    });
     if (saved) {
       setDraft({ title: "", destination: "", requiredMiles: "", deadline: "" });
+    }
+  }
+
+  async function removeGoal(goal: Goal) {
+    const deleted = await deleteGoal(goal);
+    if (deleted) {
+      await updateData({ ...data, goals: data.goals.filter((item) => item.id !== goal.id) });
     }
   }
 
@@ -2786,7 +3048,7 @@ function GoalsModule({ data, updateData }: { data: AppData; updateData: (data: A
                   <p className={"text-sm " + mutedTextClass}>{goal.destination}</p>
                   <p className={"mt-1 text-xs " + supportTextClass}>Data da viagem: {formatDate(goal.deadline)}</p>
                 </div>
-                <DeleteButton onClick={() => updateData({ ...data, goals: data.goals.filter((item) => item.id !== goal.id) })} />
+                <DeleteButton onClick={() => removeGoal(goal)} />
               </div>
               <div className="mt-4 h-3 overflow-hidden rounded-full bg-[#233B5D]">
                 <div className="h-full rounded-full bg-[#FF5A00]" style={{ width: `${progress}%` }} />

@@ -2,6 +2,7 @@ import { supabase } from "../lib/supabase/client";
 
 export type MilesProgram = {
   id: string;
+  localId?: string;
   airline: string;
   balance: number;
   cpm: number;
@@ -11,6 +12,7 @@ export type MilesProgram = {
 
 export type PointsProgram = {
   id: string;
+  localId?: string;
   type: "loyalty_points" | "bank_points";
   programName: string;
   balance: number;
@@ -20,6 +22,7 @@ export type PointsProgram = {
 
 export type BonusTransfer = {
   id: string;
+  localId?: string;
   originProgramName: string;
   destinationProgramName: string;
   sentAmount: number;
@@ -29,6 +32,7 @@ export type BonusTransfer = {
 
 export type CreditCardRecord = {
   id: string;
+  localId?: string;
   bank: string;
   cardName: string;
   limitValue: number;
@@ -39,6 +43,7 @@ export type CreditCardRecord = {
 
 export type FlightRedemption = {
   id: string;
+  localId?: string;
   date: string;
   origin: string;
   destination: string;
@@ -52,6 +57,7 @@ export type FlightRedemption = {
 
 export type Goal = {
   id: string;
+  localId?: string;
   title: string;
   destination: string;
   requiredMiles: number;
@@ -165,6 +171,10 @@ function stableExternalId(prefix: string, parts: Array<string | number | undefin
   return `${prefix}:${parts.map((part) => String(part ?? "").trim().toLowerCase()).join(":")}`;
 }
 
+function localId(record: { id: string; localId?: string }) {
+  return record.localId || record.id;
+}
+
 function parseCpmInput(value: string | number | null | undefined) {
   const parsedValue = Number(String(value ?? "").trim().replace(/\s/g, "").replace(",", "."));
   if (!Number.isFinite(parsedValue)) return 0;
@@ -238,6 +248,36 @@ function uniquePointRows(rows: Array<Record<string, any>>) {
 
 function getMilesNotes(program: MilesProgram) {
   return getNotes(program.id, `cpm: ${parseCpmInput(program.cpm)}; bonus: ${program.bonusPercentage}`);
+}
+
+function getMilesProgramExternalId(clientId: string, program: MilesProgram) {
+  return stableExternalId("miles", [
+    clientId,
+    program.airline,
+    Math.max(0, Math.round(program.balance)),
+    parseCpmInput(program.cpm),
+    program.expirationDate,
+  ]);
+}
+
+function getMilesProgramRowKey(row: Record<string, any>) {
+  return [
+    row.user_id,
+    row.airline ?? row.name ?? "",
+    String(row.balance ?? 0),
+    String(row.cpm ?? getNotesNumber(row.notes, "cpm", 0.04)),
+    row.expiration_date ?? "",
+  ].join("|");
+}
+
+function uniqueMilesRows(rows: Array<Record<string, any>>) {
+  const seen = new Set<string>();
+  return rows.filter((row) => {
+    const key = getMilesProgramRowKey(row);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function getTransferNotes(transfer: BonusTransfer) {
@@ -334,7 +374,7 @@ async function saveByIdOrExternalId<TPrimary extends Record<string, any>, TFallb
 
   const { data, error } = await supabase
     .from(table)
-    .upsert([primaryPayload as never], { onConflict: "user_id,external_id" })
+    .upsert([fallbackPayload as never], { onConflict: "user_id,local_id" })
     .select("id")
     .single();
 
@@ -344,7 +384,7 @@ async function saveByIdOrExternalId<TPrimary extends Record<string, any>, TFallb
 
   const { data: fallbackData, error: fallbackError } = await supabase
     .from(table)
-    .upsert([fallbackPayload as never], { onConflict: "user_id,external_id" })
+    .upsert([primaryPayload as never], { onConflict: "user_id,local_id" })
     .select("id")
     .single();
 
@@ -383,6 +423,7 @@ export async function loadUserDataFromSupabase(userId: string, fallbackClients: 
 
     client.cards.push({
       id: row.id,
+      localId: row.local_id ?? row.id,
       bank: row.bank ?? "",
       cardName: row.card_name ?? row.name ?? "",
       limitValue: Number(row.limit_value ?? 0),
@@ -402,6 +443,7 @@ export async function loadUserDataFromSupabase(userId: string, fallbackClients: 
 
     client.pointsPrograms.push({
       id: row.id,
+      localId: row.local_id ?? row.id,
       type: row.type ?? (getNotesText(row.notes, "tipo", "loyalty_points") as PointsProgram["type"]),
       programName: row.program_name ?? row.name ?? "",
       balance: Number(row.balance ?? 0),
@@ -410,7 +452,7 @@ export async function loadUserDataFromSupabase(userId: string, fallbackClients: 
     });
   }
 
-  for (const row of mileRows as Array<Record<string, any>>) {
+  for (const row of uniqueMilesRows(mileRows as Array<Record<string, any>>)) {
     milesRowsById.set(row.id, row);
     const client = resolveClient(row);
     if (!client) continue;
@@ -418,6 +460,7 @@ export async function loadUserDataFromSupabase(userId: string, fallbackClients: 
     const airline = row.airline || row.name || "";
     client.milesPrograms.push({
       id: row.id,
+      localId: row.local_id ?? row.id,
       airline,
       balance: Number(row.balance ?? 0),
       cpm: parseCpmInput(row.cpm ?? getNotesNumber(row.notes, "cpm", 0.04)),
@@ -437,6 +480,7 @@ export async function loadUserDataFromSupabase(userId: string, fallbackClients: 
 
     client.transfers.push({
       id: row.id,
+      localId: row.local_id ?? row.id,
       originProgramName: row.origin_program || row.origin_program_name || origin?.name || origin?.program_name || getNotesText(row.notes, "origem", ""),
       destinationProgramName: row.destination_program || row.destination_program_name || destination?.airline || destination?.name || getNotesText(row.notes, "destino", ""),
       sentAmount: Number(row.transferred_points ?? row.sent_amount ?? 0),
@@ -455,6 +499,7 @@ export async function loadUserDataFromSupabase(userId: string, fallbackClients: 
 
     client.redemptions.push({
       id: row.id,
+      localId: row.local_id ?? row.id,
       date: row.redemption_date ?? row.departure_date ?? "",
       origin: row.origin ?? "",
       destination: row.destination ?? "",
@@ -473,6 +518,7 @@ export async function loadUserDataFromSupabase(userId: string, fallbackClients: 
 
     client.goals.push({
       id: row.id,
+      localId: row.local_id ?? row.id,
       title: row.title ?? "",
       destination: row.destination ?? getNotesText(row.description, "destino", ""),
       requiredMiles: Number(row.required_miles ?? row.target_value ?? 0),
@@ -522,9 +568,11 @@ export async function saveClientToSupabase(userId: string, client: AppData) {
 
 export async function saveCardToSupabase(userId: string, clientId: string, card: CreditCardRecord) {
   const idPayload = isUuid(card.id) ? { id: card.id } : {};
+  const recordLocalId = localId(card);
   const primaryPayload = {
     ...idPayload,
     user_id: userId,
+    local_id: recordLocalId,
     external_id: externalId("card", card.id, [clientId, card.bank, card.cardName, card.dueDay]),
     card_name: card.cardName,
     bank: card.bank,
@@ -537,14 +585,16 @@ export async function saveCardToSupabase(userId: string, clientId: string, card:
     ...primaryPayload,
   };
 
-  return { ...card, id: await saveByIdOrExternalId("credit_cards", primaryPayload, fallbackPayload, card.id) };
+  return { ...card, localId: recordLocalId, id: await saveByIdOrExternalId("credit_cards", primaryPayload, fallbackPayload, card.id) };
 }
 
 export async function savePointsProgramToSupabase(userId: string, clientId: string, program: PointsProgram) {
   const idPayload = isUuid(program.id) ? { id: program.id } : {};
+  const recordLocalId = localId(program);
   const primaryPayload = {
     ...idPayload,
     user_id: userId,
+    local_id: recordLocalId,
     external_id: getPointsProgramExternalId(clientId, program),
     type: program.type,
     program_name: program.programName,
@@ -558,15 +608,16 @@ export async function savePointsProgramToSupabase(userId: string, clientId: stri
     ...primaryPayload,
   };
 
-  return { ...program, id: await saveByIdOrExternalId("points_programs", primaryPayload, fallbackPayload, program.id) };
+  return { ...program, localId: recordLocalId, id: await saveByIdOrExternalId("points_programs", primaryPayload, fallbackPayload, program.id) };
 }
 
 export async function saveMilesProgramToSupabase(userId: string, clientId: string, program: MilesProgram) {
   const idPayload = isUuid(program.id) ? { id: program.id } : {};
+  const recordLocalId = localId(program);
   const primaryPayload = {
     ...idPayload,
     user_id: userId,
-    external_id: externalId("miles", program.id, [clientId, program.airline]),
+    local_id: recordLocalId,
     airline: program.airline,
     balance: Math.max(0, Math.round(program.balance)),
     cpm: parseCpmInput(program.cpm),
@@ -574,9 +625,10 @@ export async function saveMilesProgramToSupabase(userId: string, clientId: strin
   };
   const fallbackPayload = {
     ...primaryPayload,
+    external_id: getMilesProgramExternalId(clientId, program),
   };
 
-  return { ...program, id: await saveByIdOrExternalId("miles_programs", primaryPayload, fallbackPayload, program.id) };
+  return { ...program, localId: recordLocalId, id: await saveByIdOrExternalId("miles_programs", primaryPayload, fallbackPayload, program.id) };
 }
 
 export async function saveTransferToSupabase(
@@ -587,11 +639,13 @@ export async function saveTransferToSupabase(
   milesPrograms: MilesProgram[],
 ) {
   const idPayload = isUuid(transfer.id) ? { id: transfer.id } : {};
+  const recordLocalId = localId(transfer);
   const originId = pointsPrograms.find((program) => program.programName === transfer.originProgramName)?.id ?? null;
   const destinationId = milesPrograms.find((program) => program.airline === transfer.destinationProgramName)?.id ?? null;
   const primaryPayload = {
     ...idPayload,
     user_id: userId,
+    local_id: recordLocalId,
     external_id: externalId("transfer", transfer.id, [clientId, transfer.originProgramName, transfer.destinationProgramName, transfer.date, transfer.sentAmount]),
     origin_program: transfer.originProgramName,
     destination_program: transfer.destinationProgramName,
@@ -608,15 +662,17 @@ export async function saveTransferToSupabase(
 
   void originId;
   void destinationId;
-  return { ...transfer, id: await saveByIdOrExternalId("bonus_transfers", primaryPayload, fallbackPayload, transfer.id) };
+  return { ...transfer, localId: recordLocalId, id: await saveByIdOrExternalId("bonus_transfers", primaryPayload, fallbackPayload, transfer.id) };
 }
 
 export async function saveRedemptionToSupabase(userId: string, clientId: string, redemption: FlightRedemption) {
   const idPayload = isUuid(redemption.id) ? { id: redemption.id } : {};
+  const recordLocalId = localId(redemption);
   const costs = getRedemptionCosts(redemption);
   const primaryPayload = {
     ...idPayload,
     user_id: userId,
+    local_id: recordLocalId,
     external_id: externalId("redemption", redemption.id, [clientId, redemption.date, redemption.origin, redemption.destination, redemption.airline]),
     redemption_date: nullIfEmpty(redemption.date),
     origin: redemption.origin,
@@ -633,14 +689,16 @@ export async function saveRedemptionToSupabase(userId: string, clientId: string,
     ...primaryPayload,
   };
 
-  return { ...redemption, id: await saveByIdOrExternalId("flight_redemptions", primaryPayload, fallbackPayload, redemption.id) };
+  return { ...redemption, localId: recordLocalId, id: await saveByIdOrExternalId("flight_redemptions", primaryPayload, fallbackPayload, redemption.id) };
 }
 
 export async function saveGoalToSupabase(userId: string, clientId: string, goal: Goal) {
   const idPayload = isUuid(goal.id) ? { id: goal.id } : {};
+  const recordLocalId = localId(goal);
   const primaryPayload = {
     ...idPayload,
     user_id: userId,
+    local_id: recordLocalId,
     external_id: externalId("goal", goal.id, [clientId, goal.title, goal.destination, goal.deadline]),
     title: goal.title,
     destination: goal.destination,
@@ -651,7 +709,7 @@ export async function saveGoalToSupabase(userId: string, clientId: string, goal:
     ...primaryPayload,
   };
 
-  return { ...goal, id: await saveByIdOrExternalId("goals", primaryPayload, fallbackPayload, goal.id) };
+  return { ...goal, localId: recordLocalId, id: await saveByIdOrExternalId("goals", primaryPayload, fallbackPayload, goal.id) };
 }
 
 export async function deleteRecordFromSupabase(table: TableName, userId: string, recordId: string) {
