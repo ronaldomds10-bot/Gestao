@@ -666,6 +666,66 @@ export async function saveCardToSupabase(userId: string, clientId: string, card:
   return { ...card, localId: recordLocalId, id: await saveByIdOrExternalId("credit_cards", primaryPayload, fallbackPayload, card.id) };
 }
 
+export async function updateCardInSupabase(userId: string, card: CreditCardRecord) {
+  ensureOnline();
+
+  if (!isUuid(card.id)) {
+    throw new SupabaseSyncError("Cartao sem id real do Supabase para atualizar.");
+  }
+
+  const recordLocalId = localId(card);
+  const payload = {
+    user_id: userId,
+    local_id: recordLocalId,
+    card_name: card.cardName,
+    bank: card.bank,
+    limit_value: card.limitValue,
+    points_balance: Math.max(0, Math.round(card.pointsBalance)),
+    due_day: card.dueDay,
+    points_per_dollar: card.pointsPerDollar,
+  };
+  const fallbackPayload = {
+    user_id: userId,
+    local_id: recordLocalId,
+    card_name: card.cardName,
+    bank: card.bank,
+    limit_value: card.limitValue,
+    points_balance: Math.max(0, Math.round(card.pointsBalance)),
+    due_day: card.dueDay,
+    points_multiplier: card.pointsPerDollar,
+  };
+
+  const { data, error } = await supabase
+    .from("credit_cards")
+    .update(payload as never)
+    .eq("id", card.id)
+    .eq("user_id", userId)
+    .select("id")
+    .single();
+
+  if (error) {
+    if (!isSchemaCompatibilityError(error)) {
+      throwSupabaseError("credit_cards.update", error, payload);
+    }
+
+    const { data: fallbackData, error: fallbackError } = await supabase
+      .from("credit_cards")
+      .update(fallbackPayload as never)
+      .eq("id", card.id)
+      .eq("user_id", userId)
+      .select("id")
+      .single();
+
+    if (fallbackError) {
+      throwSupabaseError("credit_cards.update.fallback", fallbackError, fallbackPayload);
+    }
+
+    return { ...card, localId: recordLocalId, id: fallbackData.id as string };
+  }
+
+  return { ...card, localId: recordLocalId, id: data.id as string };
+}
+
 export async function savePointsProgramToSupabase(userId: string, clientId: string, program: PointsProgram) {
   const idPayload = isUuid(program.id) ? { id: program.id } : {};
   const recordLocalId = localId(program);

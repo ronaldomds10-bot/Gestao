@@ -42,6 +42,7 @@ import {
   savePointsProgramToSupabase,
   saveRedemptionToSupabase,
   saveTransferToSupabase,
+  updateCardInSupabase,
   type AppData,
   type BonusTransfer,
   type CreditCardRecord,
@@ -1420,7 +1421,7 @@ export default function App() {
   }
 
   async function updateCard(card: CreditCardRecord) {
-    return runSingleRecordSync("credit_cards.update", (userId) => saveCardToSupabase(userId, data.id, card));
+    return runSingleRecordSync("credit_cards.update", (userId) => updateCardInSupabase(userId, card));
   }
 
   async function deleteCard(card: CreditCardRecord) {
@@ -2090,14 +2091,18 @@ function CardsModule({
   deleteCard: (card: CreditCardRecord) => Promise<boolean>;
 }) {
   const total = data.cards.reduce((sum, card) => sum + card.pointsBalance, 0);
-  const [draft, setDraft] = useState({ bank: "", cardName: "", limitValue: "", pointsBalance: "", pointsPerDollar: "", dueDay: "" });
-  void updateCard;
+  const [draft, setDraft] = useState({ bank: "", cardName: "", limitValue: "", pointsBalance: "", pointsPerDollar: "", dueDay: "", editingCardId: "" });
 
-  async function addCard() {
+  function resetCardDraft() {
+    setDraft({ bank: "", cardName: "", limitValue: "", pointsBalance: "", pointsPerDollar: "", dueDay: "", editingCardId: "" });
+  }
+
+  async function saveCard() {
     if (!draft.bank || !draft.cardName) return;
+    const existingCard = data.cards.find((item) => item.id === draft.editingCardId);
     const card: CreditCardRecord = {
-      id: crypto.randomUUID(),
-      localId: createLocalId(),
+      id: existingCard?.id ?? crypto.randomUUID(),
+      localId: existingCard?.localId ?? createLocalId(),
       bank: draft.bank,
       cardName: draft.cardName,
       limitValue: Number(draft.limitValue),
@@ -2105,15 +2110,29 @@ function CardsModule({
       pointsPerDollar: Number(draft.pointsPerDollar),
       dueDay: Number(draft.dueDay),
     };
-    const savedCard = await createCard(card);
+    const savedCard = existingCard ? await updateCard(card) : await createCard(card);
     if (!savedCard) return;
     const saved = await updateData({
       ...data,
-      cards: [...data.cards, savedCard],
+      cards: existingCard
+        ? data.cards.map((item) => (item.id === existingCard.id ? savedCard : item))
+        : [...data.cards, savedCard],
     });
     if (saved) {
-      setDraft({ bank: "", cardName: "", limitValue: "", pointsBalance: "", pointsPerDollar: "", dueDay: "" });
+      resetCardDraft();
     }
+  }
+
+  function editCard(card: CreditCardRecord) {
+    setDraft({
+      bank: card.bank,
+      cardName: card.cardName,
+      limitValue: String(card.limitValue),
+      pointsBalance: String(card.pointsBalance),
+      pointsPerDollar: String(card.pointsPerDollar),
+      dueDay: String(card.dueDay),
+      editingCardId: card.id,
+    });
   }
 
   async function removeCard(card: CreditCardRecord) {
@@ -2132,7 +2151,14 @@ function CardsModule({
         <Input placeholder="Pontos" type="number" value={draft.pointsBalance} onChange={(value) => setDraft({ ...draft, pointsBalance: value })} />
         <Input placeholder="Pts/USD" type="number" value={draft.pointsPerDollar} onChange={(value) => setDraft({ ...draft, pointsPerDollar: value })} />
         <Input placeholder="Dia vencimento" type="number" min="1" max="31" value={draft.dueDay} onChange={(value) => setDraft({ ...draft, dueDay: value })} />
-        <button onClick={addCard} className="inline-flex items-center justify-center gap-2 rounded-md bg-[#A855F7] px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-[#A855F7]/20 transition hover:bg-[#9333EA]"><Plus size={16} /> Criar</button>
+        <div className="flex gap-2">
+          <button onClick={saveCard} className="inline-flex items-center justify-center gap-2 rounded-md bg-[#A855F7] px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-[#A855F7]/20 transition hover:bg-[#9333EA]"><Plus size={16} /> {draft.editingCardId ? "Salvar edição" : "Criar"}</button>
+          {draft.editingCardId && (
+            <button onClick={resetCardDraft} className="inline-flex items-center justify-center rounded-md border border-[#3B5B82] px-3 py-2.5 text-sm font-semibold text-[#CBD5E1] transition hover:bg-[#233B5D]">
+              Cancelar edição
+            </button>
+          )}
+        </div>
       </div>
       <DataTable headers={["Banco", "Cartao", "Limite", "Pontos", "Pts/USD", "Vencimento", ""]}>
         {data.cards.map((card) => (
@@ -2143,7 +2169,14 @@ function CardsModule({
             <Td>{number.format(card.pointsBalance)}</Td>
             <Td>{card.pointsPerDollar}</Td>
             <Td>Dia {card.dueDay}</Td>
-            <Td align="right"><DeleteButton onClick={() => removeCard(card)} /></Td>
+            <Td align="right">
+              <div className="flex justify-end gap-1">
+                <button onClick={() => editCard(card)} className="inline-flex h-9 w-9 items-center justify-center rounded text-[#CBD5E1] transition hover:bg-[#233B5D]" title="Editar cartao">
+                  <Pencil size={16} />
+                </button>
+                <DeleteButton onClick={() => removeCard(card)} />
+              </div>
+            </Td>
           </tr>
         ))}
       </DataTable>
