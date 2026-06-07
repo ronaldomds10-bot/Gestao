@@ -53,6 +53,8 @@ export type FlightRedemption = {
   milesUsed: number;
   cpm?: number;
   airportFee?: number;
+  totalCost?: number;
+  savings?: number;
 };
 
 export type Goal = {
@@ -109,6 +111,7 @@ const TABLE_LABELS: Record<TableName, string> = {
 };
 
 const ALLOWED_DELETE_TABLES = new Set<TableName>(Object.keys(TABLE_LABELS) as TableName[]);
+const LEGACY_REDEMPTION_DEFAULT_CPM = 0.027;
 
 export class SupabaseSyncError extends Error {
   constructor(message = "Nao foi possivel salvar no Supabase. Verifique sua conexao e tente novamente.") {
@@ -220,12 +223,24 @@ function getTransferFinalMiles(transfer: Pick<BonusTransfer, "sentAmount" | "bon
 
 function getRedemptionCosts(redemption: FlightRedemption) {
   const airportFee = redemption.airportFee ?? 0;
-  const hasNewCostFields = redemption.cpm !== undefined;
-  const milesCost = hasNewCostFields ? redemption.milesUsed * parseCpmInput(redemption.cpm ?? 0) : Math.max(redemption.paidPrice - airportFee, 0);
-  const totalCost = hasNewCostFields ? milesCost + airportFee : redemption.paidPrice;
-  const economy = redemption.regularPrice - totalCost;
+  const cpm = redemption.cpm === undefined ? undefined : parseCpmInput(redemption.cpm);
+  const hasCpm = cpm !== undefined && cpm > 0;
+  const persistedTotalCost = redemption.totalCost ?? redemption.paidPrice;
+  const milesCost = hasCpm ? redemption.milesUsed * cpm : Math.max(persistedTotalCost - airportFee, 0);
+  const totalCost = hasCpm ? milesCost + airportFee : persistedTotalCost;
+  const economy = hasCpm ? redemption.regularPrice - totalCost : redemption.savings ?? redemption.regularPrice - totalCost;
 
   return { airportFee, milesCost, totalCost, economy };
+}
+
+function shouldRecoverLegacyRedemptionCpm(redemption: {
+  milesUsed: number;
+  cpm: number | undefined;
+  airportFee: number;
+  totalCost: number;
+}) {
+  if (redemption.cpm === undefined || redemption.cpm > 0 || redemption.milesUsed <= 0) return false;
+  return redemption.totalCost <= redemption.airportFee;
 }
 
 function getNotes(sourceId: string, details?: string) {
@@ -544,9 +559,36 @@ export async function loadUserDataFromSupabase(userId: string, fallbackClients: 
     const client = resolveClient(row);
     if (!client) continue;
 
-    const cpm = row.cpm ?? getNotesNumber(row.notes, "cpm", 0);
+    const notesCpm = getNotesText(row.notes, "cpm", "");
+    const savedCpm = row.cpm !== null && row.cpm !== undefined && String(row.cpm).trim() !== ""
+      ? parseCpmInput(row.cpm)
+      : notesCpm
+        ? parseCpmInput(notesCpm)
+        : undefined;
     const airportFee = row.airport_fee ?? row.taxes ?? getNotesNumber(row.notes, "taxa", 0);
-    const paidPrice = row.paid_price ?? row.cash_cost ?? 0;
+    const totalCost = Number(row.total_cost ?? row.paid_price ?? row.cash_cost ?? 0);
+    const savings = row.savings === null || row.savings === undefined ? undefined : Number(row.savings);
+    const regularPrice = Number(row.regular_price ?? row.sale_price ?? 0);
+    const milesUsed = Number(row.miles_used ?? 0);
+    const resolvedAirportFee = Number(airportFee ?? 0);
+    const shouldRecoverCpm = shouldRecoverLegacyRedemptionCpm({
+      milesUsed,
+      cpm: savedCpm,
+      airportFee: resolvedAirportFee,
+      totalCost,
+    });
+
+    if (shouldRecoverCpm) {
+      console.warn("Emissão com CPM zerado recuperada com CPM padrão.", {
+        id: row.id,
+        milesUsed,
+        cpm: savedCpm,
+        airportFee: resolvedAirportFee,
+        totalCost,
+        savings,
+        recoveredCpm: LEGACY_REDEMPTION_DEFAULT_CPM,
+      });
+    }
 
     client.redemptions.push({
       id: row.id,
@@ -555,11 +597,13 @@ export async function loadUserDataFromSupabase(userId: string, fallbackClients: 
       origin: row.origin ?? "",
       destination: row.destination ?? "",
       airline: row.airline ?? getNotesText(row.notes, "companhia", ""),
-      regularPrice: Number(row.regular_price ?? row.sale_price ?? 0),
-      paidPrice: Number(paidPrice),
-      milesUsed: Number(row.miles_used ?? 0),
-      cpm: cpm ? parseCpmInput(cpm) : undefined,
-      airportFee: Number(airportFee ?? 0),
+      regularPrice,
+      paidPrice: totalCost,
+      milesUsed,
+      cpm: shouldRecoverCpm ? LEGACY_REDEMPTION_DEFAULT_CPM : savedCpm,
+      airportFee: resolvedAirportFee,
+      totalCost,
+      savings,
     });
   }
 
@@ -838,7 +882,9 @@ export async function saveTransferToSupabase(
 export async function saveRedemptionToSupabase(userId: string, clientId: string, redemption: FlightRedemption) {
   const idPayload = isUuid(redemption.id) ? { id: redemption.id } : {};
   const recordLocalId = localId(redemption);
-  const costs = getRedemptionCosts(redemption);
+  const cpm = redemption.cpm === undefined ? null : parseCpmInput(redemption.cpm);
+  const normalizedRedemption = { ...redemption, cpm: cpm ?? undefined };
+  const costs = getRedemptionCosts(normalizedRedemption);
   const primaryPayload = {
     ...idPayload,
     user_id: userId,
@@ -850,7 +896,7 @@ export async function saveRedemptionToSupabase(userId: string, clientId: string,
     airline: redemption.airline,
     miles_used: Math.max(0, Math.round(redemption.milesUsed)),
     regular_price: redemption.regularPrice,
-    cpm: redemption.cpm ?? null,
+    cpm,
     airport_fee: costs.airportFee,
     total_cost: costs.totalCost,
     savings: costs.economy,
@@ -859,7 +905,15 @@ export async function saveRedemptionToSupabase(userId: string, clientId: string,
     ...primaryPayload,
   };
 
-  return { ...redemption, localId: recordLocalId, id: await saveByIdOrExternalId("flight_redemptions", primaryPayload, fallbackPayload, redemption.id) };
+  return {
+    ...redemption,
+    localId: recordLocalId,
+    cpm: cpm ?? undefined,
+    paidPrice: costs.totalCost,
+    totalCost: costs.totalCost,
+    savings: costs.economy,
+    id: await saveByIdOrExternalId("flight_redemptions", primaryPayload, fallbackPayload, redemption.id),
+  };
 }
 
 export async function saveGoalToSupabase(userId: string, clientId: string, goal: Goal) {
