@@ -197,10 +197,12 @@ function getBankAvailableBalance(data: AppData, program: PointsProgram) {
 
 function getRedemptionCosts(redemption: FlightRedemption) {
   const airportFee = redemption.airportFee ?? 0;
-  const hasNewCostFields = redemption.cpm !== undefined;
-  const milesCost = hasNewCostFields ? redemption.milesUsed * parseCpmInput(redemption.cpm ?? 0) : Math.max(redemption.paidPrice - airportFee, 0);
-  const totalCost = hasNewCostFields ? milesCost + airportFee : redemption.paidPrice;
-  const economy = redemption.regularPrice - totalCost;
+  const cpm = redemption.cpm === undefined ? undefined : parseCpmInput(redemption.cpm);
+  const hasCpm = cpm !== undefined;
+  const persistedTotalCost = redemption.totalCost ?? redemption.paidPrice;
+  const milesCost = hasCpm ? redemption.milesUsed * cpm : Math.max(persistedTotalCost - airportFee, 0);
+  const totalCost = hasCpm ? milesCost + airportFee : persistedTotalCost;
+  const economy = hasCpm ? redemption.regularPrice - totalCost : redemption.savings ?? redemption.regularPrice - totalCost;
 
   return { airportFee, milesCost, totalCost, economy };
 }
@@ -1005,12 +1007,15 @@ async function migrateLocalStorageToSupabase() {
 
     for (const redemption of localClient.redemptions) {
       const costs = getRedemptionCosts(redemption);
-      const notes = getMigrationNotes(redemption.id, `companhia: ${redemption.airline}`);
-      const { data: existingRedemption, error: redemptionSelectError } = await supabase
-        .from("flight_redemptions")
+      const redemptionTable = supabase.from("flight_redemptions") as any;
+      const { data: existingRedemption, error: redemptionSelectError } = await redemptionTable
         .select("id")
         .eq("user_id", user.id)
-        .eq("notes", notes)
+        .eq("redemption_date", nullIfEmpty(redemption.date))
+        .eq("origin", redemption.origin)
+        .eq("destination", redemption.destination)
+        .eq("airline", redemption.airline)
+        .eq("miles_used", Math.max(0, Math.round(redemption.milesUsed)))
         .limit(1)
         .maybeSingle();
 
@@ -1019,21 +1024,19 @@ async function migrateLocalStorageToSupabase() {
       }
 
       if (!existingRedemption) {
-        const { error: redemptionInsertError } = await supabase.from("flight_redemptions").insert([
+        const { error: redemptionInsertError } = await redemptionTable.insert([
           {
             user_id: user.id,
-            client_id: clientId,
-            miles_program_id: milesProgramIds.get(redemption.airline) ?? null,
             origin: redemption.origin,
             destination: redemption.destination,
-            departure_date: nullIfEmpty(redemption.date),
-            return_date: null,
+            airline: redemption.airline,
+            redemption_date: nullIfEmpty(redemption.date),
             miles_used: Math.max(0, Math.round(redemption.milesUsed)),
-            cash_cost: costs.totalCost,
-            taxes: costs.airportFee,
-            sale_price: redemption.regularPrice,
-            status: "completed",
-            notes,
+            regular_price: redemption.regularPrice,
+            cpm: redemption.cpm === undefined ? null : parseCpmInput(redemption.cpm),
+            airport_fee: costs.airportFee,
+            total_cost: costs.totalCost,
+            savings: costs.economy,
           },
         ]);
 

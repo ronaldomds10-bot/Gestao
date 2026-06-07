@@ -111,7 +111,6 @@ const TABLE_LABELS: Record<TableName, string> = {
 };
 
 const ALLOWED_DELETE_TABLES = new Set<TableName>(Object.keys(TABLE_LABELS) as TableName[]);
-const LEGACY_REDEMPTION_DEFAULT_CPM = 0.027;
 
 export class SupabaseSyncError extends Error {
   constructor(message = "Nao foi possivel salvar no Supabase. Verifique sua conexao e tente novamente.") {
@@ -224,23 +223,13 @@ function getTransferFinalMiles(transfer: Pick<BonusTransfer, "sentAmount" | "bon
 function getRedemptionCosts(redemption: FlightRedemption) {
   const airportFee = redemption.airportFee ?? 0;
   const cpm = redemption.cpm === undefined ? undefined : parseCpmInput(redemption.cpm);
-  const hasCpm = cpm !== undefined && cpm > 0;
+  const hasCpm = cpm !== undefined;
   const persistedTotalCost = redemption.totalCost ?? redemption.paidPrice;
   const milesCost = hasCpm ? redemption.milesUsed * cpm : Math.max(persistedTotalCost - airportFee, 0);
   const totalCost = hasCpm ? milesCost + airportFee : persistedTotalCost;
   const economy = hasCpm ? redemption.regularPrice - totalCost : redemption.savings ?? redemption.regularPrice - totalCost;
 
   return { airportFee, milesCost, totalCost, economy };
-}
-
-function shouldRecoverLegacyRedemptionCpm(redemption: {
-  milesUsed: number;
-  cpm: number | undefined;
-  airportFee: number;
-  totalCost: number;
-}) {
-  if (redemption.cpm === undefined || redemption.cpm > 0 || redemption.milesUsed <= 0) return false;
-  return redemption.totalCost <= redemption.airportFee;
 }
 
 function getNotes(sourceId: string, details?: string) {
@@ -571,25 +560,6 @@ export async function loadUserDataFromSupabase(userId: string, fallbackClients: 
     const regularPrice = Number(row.regular_price ?? row.sale_price ?? 0);
     const milesUsed = Number(row.miles_used ?? 0);
     const resolvedAirportFee = Number(airportFee ?? 0);
-    const shouldRecoverCpm = shouldRecoverLegacyRedemptionCpm({
-      milesUsed,
-      cpm: savedCpm,
-      airportFee: resolvedAirportFee,
-      totalCost,
-    });
-
-    if (shouldRecoverCpm) {
-      console.warn("Emissão com CPM zerado recuperada com CPM padrão.", {
-        id: row.id,
-        milesUsed,
-        cpm: savedCpm,
-        airportFee: resolvedAirportFee,
-        totalCost,
-        savings,
-        recoveredCpm: LEGACY_REDEMPTION_DEFAULT_CPM,
-      });
-    }
-
     client.redemptions.push({
       id: row.id,
       localId: row.local_id ?? row.id,
@@ -600,7 +570,7 @@ export async function loadUserDataFromSupabase(userId: string, fallbackClients: 
       regularPrice,
       paidPrice: totalCost,
       milesUsed,
-      cpm: shouldRecoverCpm ? LEGACY_REDEMPTION_DEFAULT_CPM : savedCpm,
+      cpm: savedCpm,
       airportFee: resolvedAirportFee,
       totalCost,
       savings,
