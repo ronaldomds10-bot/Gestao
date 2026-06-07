@@ -1928,6 +1928,7 @@ function Dashboard({ data, goTo }: { data: AppData; goTo: (section: Section) => 
     };
   });
   const hasMilesDistribution = milesDistribution.some((program) => program.balance > 0);
+  const estimatedAirlineValue = milesDistribution.reduce((sum, program) => sum + program.patrimony, 0);
 
   return (
     <div className="mx-auto max-w-7xl">
@@ -1946,7 +1947,16 @@ function Dashboard({ data, goTo }: { data: AppData; goTo: (section: Section) => 
             <div className="mt-4 space-y-2 text-sm">
               <p className={mutedTextClass}>Milhas aereas: <span className="font-semibold text-[#FF5A00]">{number.format(metrics.milesWithBonus)}</span></p>
               <p className={mutedTextClass}>Pontos: <span className="font-semibold text-[#10B981]">{number.format(metrics.totalPoints)}</span></p>
-              <p className={"mt-2 " + mutedTextClass}>Valor est.: <span className="font-bold text-[#A855F7]">{currency.format(metrics.estimatedValue)}</span></p>
+              <div className={"mt-2 space-y-1 " + mutedTextClass}>
+                <p>Valor estimado:</p>
+                {milesDistribution.map((program) => (
+                  <p key={program.id} className="text-xs">
+                    <span className="text-[#94A3B8]">• {program.airline}:</span>{" "}
+                    <span className="font-semibold text-[#CBD5E1]">{currency.format(program.patrimony)}</span>
+                  </p>
+                ))}
+                <p className="pt-1">Total: <span className="font-bold text-[#A855F7]">{currency.format(estimatedAirlineValue)}</span></p>
+              </div>
             </div>
           </div>
         </button>
