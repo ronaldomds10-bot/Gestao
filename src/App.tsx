@@ -2569,9 +2569,13 @@ function ProgramsModule({
   async function duplicatePointsProgram(program: PointsProgram) {
     const relatedTransfer = data.transfers.find((transfer) => isTransferForPointsProgram(transfer, program));
     const duplicatedProgram: PointsProgram = {
-      ...program,
       id: crypto.randomUUID(),
       localId: createLocalId(),
+      type: program.type,
+      programName: program.programName,
+      balance: program.balance,
+      cpm: program.cpm,
+      expirationDate: program.expirationDate,
     };
     const savedProgram = await createPointsProgram(duplicatedProgram);
     if (!savedProgram) return;

@@ -252,9 +252,10 @@ function getPointsNotes(program: PointsProgram) {
   return getNotes(program.id, `tipo: ${program.type}; cpm: ${parseCpmInput(program.cpm)}`);
 }
 
-function getPointsProgramExternalId(clientId: string, program: PointsProgram) {
+function getPointsProgramExternalId(clientId: string, program: PointsProgram, recordLocalId: string) {
   return stableExternalId("points", [
     clientId,
+    recordLocalId,
     program.type,
     program.programName,
     Math.max(0, Math.round(program.balance)),
@@ -785,7 +786,7 @@ export async function savePointsProgramToSupabase(userId: string, clientId: stri
     ...idPayload,
     user_id: userId,
     local_id: recordLocalId,
-    external_id: getPointsProgramExternalId(clientId, program),
+    external_id: getPointsProgramExternalId(clientId, program, recordLocalId),
     type: program.type,
     program_name: program.programName,
     balance: Math.max(0, Math.round(program.balance)),
