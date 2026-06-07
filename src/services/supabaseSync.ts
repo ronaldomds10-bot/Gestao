@@ -475,7 +475,7 @@ export async function loadUserDataFromSupabase(userId: string, fallbackClients: 
   const clientMap = new Map(clients.map((client) => [client.id, client]));
 
   const resolveClient = (row: Record<string, any>) =>
-    clientMap.get(row.client_id) ?? (defaultClientId ? clientMap.get(defaultClientId) : undefined);
+    row.client_id ? clientMap.get(row.client_id) : defaultClientId ? clientMap.get(defaultClientId) : undefined;
 
   for (const row of cardRows as Array<Record<string, any>>) {
     const client = resolveClient(row);
@@ -703,6 +703,7 @@ export async function saveCardToSupabase(userId: string, clientId: string, card:
   const primaryPayload = {
     ...idPayload,
     user_id: userId,
+    client_id: clientId,
     local_id: recordLocalId,
     external_id: externalId("card", card.id, [clientId, card.bank, card.cardName, card.dueDay]),
     card_name: card.cardName,
@@ -719,7 +720,7 @@ export async function saveCardToSupabase(userId: string, clientId: string, card:
   return { ...card, localId: recordLocalId, id: await saveByIdOrExternalId("credit_cards", primaryPayload, fallbackPayload, card.id) };
 }
 
-export async function updateCardInSupabase(userId: string, card: CreditCardRecord) {
+export async function updateCardInSupabase(userId: string, clientId: string, card: CreditCardRecord) {
   ensureOnline();
 
   if (!isUuid(card.id)) {
@@ -729,6 +730,7 @@ export async function updateCardInSupabase(userId: string, card: CreditCardRecor
   const recordLocalId = localId(card);
   const payload = {
     user_id: userId,
+    client_id: clientId,
     local_id: recordLocalId,
     card_name: card.cardName,
     bank: card.bank,
@@ -739,6 +741,7 @@ export async function updateCardInSupabase(userId: string, card: CreditCardRecor
   };
   const fallbackPayload = {
     user_id: userId,
+    client_id: clientId,
     local_id: recordLocalId,
     card_name: card.cardName,
     bank: card.bank,
@@ -785,6 +788,7 @@ export async function savePointsProgramToSupabase(userId: string, clientId: stri
   const primaryPayload = {
     ...idPayload,
     user_id: userId,
+    client_id: clientId,
     local_id: recordLocalId,
     external_id: getPointsProgramExternalId(clientId, program, recordLocalId),
     type: program.type,
@@ -808,6 +812,7 @@ export async function saveMilesProgramToSupabase(userId: string, clientId: strin
   const primaryPayload = {
     ...idPayload,
     user_id: userId,
+    client_id: clientId,
     local_id: recordLocalId,
     airline: program.airline,
     balance: Math.max(0, Math.round(program.balance)),
@@ -836,6 +841,7 @@ export async function saveTransferToSupabase(
   const primaryPayload = {
     ...idPayload,
     user_id: userId,
+    client_id: clientId,
     local_id: recordLocalId,
     external_id: externalId("transfer", transfer.id, [clientId, transfer.originProgramName, transfer.destinationProgramName, transfer.date, transfer.sentAmount]),
     origin_program: transfer.originProgramName,
@@ -871,6 +877,7 @@ export async function saveRedemptionToSupabase(userId: string, clientId: string,
   const primaryPayload = {
     ...idPayload,
     user_id: userId,
+    client_id: clientId,
     local_id: recordLocalId,
     external_id: externalId("redemption", redemption.id, [clientId, redemption.date, redemption.origin, redemption.destination, redemption.airline]),
     redemption_date: nullIfEmpty(redemption.date),
@@ -905,6 +912,7 @@ export async function saveGoalToSupabase(userId: string, clientId: string, goal:
   const primaryPayload = {
     ...idPayload,
     user_id: userId,
+    client_id: clientId,
     local_id: recordLocalId,
     external_id: externalId("goal", goal.id, [clientId, goal.title, goal.destination, goal.deadline]),
     title: goal.title,

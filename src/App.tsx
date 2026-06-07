@@ -1492,7 +1492,7 @@ export default function App() {
   }
 
   async function updateCard(card: CreditCardRecord) {
-    return runSingleRecordSync("credit_cards.update", (userId) => updateCardInSupabase(userId, card));
+    return runSingleRecordSync("credit_cards.update", (userId) => updateCardInSupabase(userId, data.id, card));
   }
 
   async function deleteCard(card: CreditCardRecord) {
