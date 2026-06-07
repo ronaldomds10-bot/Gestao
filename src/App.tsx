@@ -34,7 +34,7 @@ import { supabase } from "./lib/supabase/client";
 import { ensureUserProfile } from "./lib/supabase/ensureUserProfile";
 import type { Session } from "@supabase/supabase-js";
 import {
-  deleteRecordFromSupabase,
+  deleteSupabaseRecord,
   handleSupabaseError,
   loadUserDataFromSupabase,
   saveCardToSupabase,
@@ -1428,7 +1428,7 @@ export default function App() {
   }
 
   async function deleteCard(card: CreditCardRecord) {
-    return Boolean(await runSingleRecordSync("credit_cards.delete", (userId) => deleteRecordFromSupabase("credit_cards", userId, card.id, card.localId).then(() => true)));
+    return Boolean(await runSingleRecordSync("credit_cards.delete", (userId) => deleteSupabaseRecord({ table: "credit_cards", id: card.id, local_id: card.localId, user_id: userId, label: "Cartão" })));
   }
 
   async function createPointsProgram(program: PointsProgram) {
@@ -1440,11 +1440,7 @@ export default function App() {
   }
 
   async function deletePointsProgram(program: PointsProgram) {
-    if (!isUuid(program.id)) {
-      console.warn("Programa de pontos sem id real do Supabase. Removendo apenas do estado/cache.", program.id);
-      return true;
-    }
-    return Boolean(await runSingleRecordSync("points_programs.delete", (userId) => deleteRecordFromSupabase("points_programs", userId, program.id).then(() => true)));
+    return Boolean(await runSingleRecordSync("points_programs.delete", (userId) => deleteSupabaseRecord({ table: "points_programs", id: program.id, local_id: program.localId, user_id: userId, label: "Programa de pontos" })));
   }
 
   async function createMilesProgram(program: MilesProgram) {
@@ -1456,11 +1452,7 @@ export default function App() {
   }
 
   async function deleteMilesProgram(program: MilesProgram) {
-    if (!isUuid(program.id)) {
-      console.warn("Programa de milhas sem id real do Supabase. Removendo apenas do estado/cache.", program.id);
-      return true;
-    }
-    return Boolean(await runSingleRecordSync("miles_programs.delete", (userId) => deleteRecordFromSupabase("miles_programs", userId, program.id).then(() => true)));
+    return Boolean(await runSingleRecordSync("miles_programs.delete", (userId) => deleteSupabaseRecord({ table: "miles_programs", id: program.id, local_id: program.localId, user_id: userId, label: "Programa de milhas" })));
   }
 
   async function createTransfer(transfer: BonusTransfer, pointsPrograms = data.pointsPrograms, milesPrograms = data.milesPrograms) {
@@ -1472,11 +1464,7 @@ export default function App() {
   }
 
   async function deleteTransfer(transfer: BonusTransfer) {
-    if (!isUuid(transfer.id)) {
-      console.warn("Transferencia sem id real do Supabase. Removendo apenas do estado/cache.", transfer.id);
-      return true;
-    }
-    return Boolean(await runSingleRecordSync("bonus_transfers.delete", (userId) => deleteRecordFromSupabase("bonus_transfers", userId, transfer.id).then(() => true)));
+    return Boolean(await runSingleRecordSync("bonus_transfers.delete", (userId) => deleteSupabaseRecord({ table: "bonus_transfers", id: transfer.id, local_id: transfer.localId, user_id: userId, label: "Transferência" })));
   }
 
   async function createRedemption(redemption: FlightRedemption) {
@@ -1488,11 +1476,7 @@ export default function App() {
   }
 
   async function deleteRedemption(redemption: FlightRedemption) {
-    if (!isUuid(redemption.id)) {
-      console.warn("Emissao sem id real do Supabase. Removendo apenas do estado/cache.", redemption.id);
-      return true;
-    }
-    return Boolean(await runSingleRecordSync("flight_redemptions.delete", (userId) => deleteRecordFromSupabase("flight_redemptions", userId, redemption.id).then(() => true)));
+    return Boolean(await runSingleRecordSync("flight_redemptions.delete", (userId) => deleteSupabaseRecord({ table: "flight_redemptions", id: redemption.id, local_id: redemption.localId, user_id: userId, label: "Emissão" })));
   }
 
   async function createGoal(goal: Goal) {
@@ -1504,11 +1488,7 @@ export default function App() {
   }
 
   async function deleteGoal(goal: Goal) {
-    if (!isUuid(goal.id)) {
-      console.warn("Meta sem id real do Supabase. Removendo apenas do estado/cache.", goal.id);
-      return true;
-    }
-    return Boolean(await runSingleRecordSync("goals.delete", (userId) => deleteRecordFromSupabase("goals", userId, goal.id).then(() => true)));
+    return Boolean(await runSingleRecordSync("goals.delete", (userId) => deleteSupabaseRecord({ table: "goals", id: goal.id, local_id: goal.localId, user_id: userId, label: "Meta" })));
   }
 
   async function updateData(nextData: AppData) {
@@ -1559,12 +1539,6 @@ export default function App() {
       }
     };
 
-    if (!isUuid(client.id)) {
-      console.warn("Cliente sem id real do Supabase. Removendo apenas do cache local.", client.id);
-      removeFromLocalState();
-      return;
-    }
-
     try {
       const {
         data: { user },
@@ -1575,24 +1549,12 @@ export default function App() {
         throw userError ?? new Error("Usuario autenticado nao encontrado.");
       }
 
-      const { data: deletedRows, error } = await supabase
-        .from("clients")
-        .delete()
-        .eq("id", client.id)
-        .eq("user_id", user.id)
-        .select("id");
-
-      if (error) {
-        throw error;
+      const deleted = await deleteSupabaseRecord({ table: "clients", id: client.id, local_id: client.localId, user_id: user.id, label: "Cliente" });
+      if (deleted) {
+        removeFromLocalState();
       }
-
-      if (!deletedRows || deletedRows.length === 0) {
-        throw new Error("Cliente nao encontrado para o usuario autenticado.");
-      }
-
-      removeFromLocalState();
     } catch (error) {
-      handleSupabaseError("clients.delete", error, { id: client.id });
+      handleSupabaseError("clients.delete", error, { id: client.id, local_id: client.localId });
     }
   }
 
@@ -2740,7 +2702,17 @@ function ProgramsModule({
   );
 }
 
-function LegacyProgramsModule({ data, updateData }: { data: AppData; updateData: (data: AppData) => void }) {
+function LegacyProgramsModule({
+  data,
+  updateData,
+  deletePointsProgramRecord,
+  deleteMilesProgram,
+}: {
+  data: AppData;
+  updateData: (data: AppData) => Promise<boolean>;
+  deletePointsProgramRecord: (program: PointsProgram) => Promise<boolean>;
+  deleteMilesProgram: (program: MilesProgram) => Promise<boolean>;
+}) {
   const totalMiles = data.milesPrograms.reduce((sum, program) => sum + program.balance, 0);
   const totalPoints = data.pointsPrograms.reduce((sum, program) => sum + program.balance, 0);
   const [draftMiles, setDraftMiles] = useState({ airline: "Smiles", balance: "", cpm: "0.04", bonusPercentage: "", expirationDate: "" });
@@ -2758,9 +2730,9 @@ function LegacyProgramsModule({ data, updateData }: { data: AppData; updateData:
     expirationDate: "",
   });
 
-  function addMilesProgram() {
+  async function addMilesProgram() {
     if (!draftMiles.airline || !draftMiles.balance) return;
-    updateData({
+    const saved = await updateData({
       ...data,
       milesPrograms: [...data.milesPrograms, {
         id: crypto.randomUUID(),
@@ -2772,12 +2744,14 @@ function LegacyProgramsModule({ data, updateData }: { data: AppData; updateData:
         expirationDate: draftMiles.expirationDate,
       }],
     });
-    setDraftMiles({ airline: "Smiles", balance: "", cpm: "0.04", bonusPercentage: "", expirationDate: "" });
+    if (saved) {
+      setDraftMiles({ airline: "Smiles", balance: "", cpm: "0.04", bonusPercentage: "", expirationDate: "" });
+    }
   }
 
-  function addPointsProgram() {
+  async function addPointsProgram() {
     if (!draftPoints.programName || !draftPoints.balance) return;
-    updateData({
+    const saved = await updateData({
       ...data,
       pointsPrograms: [...data.pointsPrograms, {
         id: crypto.randomUUID(),
@@ -2789,7 +2763,23 @@ function LegacyProgramsModule({ data, updateData }: { data: AppData; updateData:
         expirationDate: draftPoints.expirationDate,
       }],
     });
-    setDraftPoints({ type: "loyalty_points", programName: "Livelo", balance: "", cpm: "0.025", expirationDate: "" });
+    if (saved) {
+      setDraftPoints({ type: "loyalty_points", programName: "Livelo", balance: "", cpm: "0.025", expirationDate: "" });
+    }
+  }
+
+  async function removeLegacyMilesProgram(program: MilesProgram) {
+    const deleted = await deleteMilesProgram(program);
+    if (deleted) {
+      await updateData({ ...data, milesPrograms: data.milesPrograms.filter((item) => item.id !== program.id) });
+    }
+  }
+
+  async function removeLegacyPointsProgram(program: PointsProgram) {
+    const deleted = await deletePointsProgramRecord(program);
+    if (deleted) {
+      await updateData({ ...data, pointsPrograms: data.pointsPrograms.filter((item) => item.id !== program.id) });
+    }
   }
 
   return (
@@ -2819,7 +2809,7 @@ function LegacyProgramsModule({ data, updateData }: { data: AppData; updateData:
                   <span className="font-semibold text-white">{number.format(Math.round(bonusValue))}</span>
                 </Td>
                 <Td>{formatDate(program.expirationDate)}</Td>
-                <Td align="right"><DeleteButton onClick={() => updateData({ ...data, milesPrograms: data.milesPrograms.filter((item) => item.id !== program.id) })} /></Td>
+                <Td align="right"><DeleteButton onClick={() => removeLegacyMilesProgram(program)} /></Td>
               </tr>
             );
           })}
@@ -2849,7 +2839,7 @@ function LegacyProgramsModule({ data, updateData }: { data: AppData; updateData:
                   <span className="font-semibold">{currency.format(value)}</span>
                 </Td>
                 <Td>{formatDate(program.expirationDate)}</Td>
-                <Td align="right"><DeleteButton onClick={() => updateData({ ...data, pointsPrograms: data.pointsPrograms.filter((item) => item.id !== program.id) })} /></Td>
+                <Td align="right"><DeleteButton onClick={() => removeLegacyPointsProgram(program)} /></Td>
               </tr>
             );
           })}

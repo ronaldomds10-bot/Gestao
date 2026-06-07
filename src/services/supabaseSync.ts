@@ -98,6 +98,18 @@ type TableName =
   | "flight_redemptions"
   | "goals";
 
+const TABLE_LABELS: Record<TableName, string> = {
+  clients: "Cliente",
+  credit_cards: "Cartão",
+  points_programs: "Programa de pontos",
+  miles_programs: "Programa de milhas",
+  bonus_transfers: "Transferência",
+  flight_redemptions: "Emissão",
+  goals: "Meta",
+};
+
+const ALLOWED_DELETE_TABLES = new Set<TableName>(Object.keys(TABLE_LABELS) as TableName[]);
+
 export class SupabaseSyncError extends Error {
   constructor(message = "Nao foi possivel salvar no Supabase. Verifique sua conexao e tente novamente.") {
     super(message);
@@ -117,14 +129,34 @@ type SupabaseErrorWithContext = {
 
 export function handleSupabaseError(context: string, error: unknown, payload?: SupabaseErrorPayload) {
   const supabaseError = error as SupabaseErrorWithContext;
+  const resolvedContext = supabaseError?.context ?? context;
+  const resolvedPayload = supabaseError?.payload ?? payload;
+  const [table, action] = resolvedContext.split(".");
+  const isProgramsTable = table === "points_programs" || table === "miles_programs" || table === "bonus_transfers";
+
+  if (isProgramsTable) {
+    console.error("PROGRAMS SAVE ERROR", {
+      context: resolvedContext,
+      table,
+      action,
+      code: supabaseError?.code,
+      message: supabaseError?.message,
+      details: supabaseError?.details,
+      payload: resolvedPayload,
+      id: resolvedPayload?.id,
+      local_id: resolvedPayload?.local_id,
+      user_id: resolvedPayload?.user_id,
+    });
+  }
+
   console.error("SUPABASE ERROR", {
-    context: supabaseError?.context ?? context,
+    context: resolvedContext,
     code: supabaseError?.code,
     message: supabaseError?.message,
     details: supabaseError?.details,
-    payload: supabaseError?.payload ?? payload,
+    payload: resolvedPayload,
   });
-  window.alert("Não foi possível salvar no Supabase. Tente novamente.");
+  window.alert(supabaseError?.message || "Não foi possível salvar no Supabase. Tente novamente.");
 }
 
 function throwSupabaseError(context: string, error: unknown, payload?: SupabaseErrorPayload): never {
@@ -850,29 +882,64 @@ export async function saveGoalToSupabase(userId: string, clientId: string, goal:
   return { ...goal, localId: recordLocalId, id: await saveByIdOrExternalId("goals", primaryPayload, fallbackPayload, goal.id) };
 }
 
-export async function deleteRecordFromSupabase(table: TableName, userId: string, recordId: string, recordLocalId?: string) {
+type DeleteSupabaseRecordParams = {
+  table: TableName;
+  id?: string;
+  local_id?: string;
+  user_id?: string;
+  label?: string;
+};
+
+export async function deleteSupabaseRecord({ table, id = "", local_id = "", user_id: requestedUserId, label }: DeleteSupabaseRecordParams) {
   ensureOnline();
 
-  const fallbackLocalId = recordLocalId || recordId;
+  if (!ALLOWED_DELETE_TABLES.has(table)) {
+    throw new SupabaseSyncError("Tabela nao permitida para exclusao.");
+  }
 
-  if (isUuid(recordId)) {
+  const resolvedLabel = label || TABLE_LABELS[table];
+  const fallbackLocalId = local_id || id;
+  const {
+    data: { user },
+    error: userError,
+  } = await supabase.auth.getUser();
+
+  if (userError || !user) {
+    const authError = userError ?? new SupabaseSyncError("Usuario autenticado nao encontrado.");
+    console.error("SUPABASE DELETE ERROR", { table, id, local_id: fallbackLocalId, user_id: undefined, error: authError });
+    throwSupabaseError(`${table}.delete.auth`, authError, { table, id, local_id: fallbackLocalId });
+  }
+
+  if (requestedUserId && requestedUserId !== user.id) {
+    const error = new SupabaseSyncError(`${resolvedLabel} nao pode ser excluido por outro usuario.`);
+    console.error("SUPABASE DELETE ERROR", { table, id, local_id: fallbackLocalId, user_id: requestedUserId, error });
+    throwSupabaseError(`${table}.delete.userMismatch`, error, { table, id, local_id: fallbackLocalId, user_id: requestedUserId });
+  }
+
+  const userId = user.id;
+  const payload = { table, id, local_id: fallbackLocalId, user_id: userId };
+
+  if (isUuid(id)) {
     const { error, count } = await supabase
       .from(table)
       .delete({ count: "exact" })
-      .eq("id", recordId)
+      .eq("id", id)
       .eq("user_id", userId);
 
     if (error) {
-      throwSupabaseError(`${table}.delete`, error, { user_id: userId, id: recordId });
+      console.error("SUPABASE DELETE ERROR", { table, id, local_id: fallbackLocalId, user_id: userId, error });
+      throwSupabaseError(`${table}.delete`, error, payload);
     }
 
     if ((count ?? 0) > 0) {
-      return;
+      return true;
     }
   }
 
   if (!fallbackLocalId) {
-    throw new SupabaseSyncError("Registro sem id real ou local_id para excluir no Supabase.");
+    const error = new SupabaseSyncError(`${resolvedLabel} sem id real ou local_id para excluir no Supabase.`);
+    console.error("SUPABASE DELETE ERROR", { table, id, local_id: fallbackLocalId, user_id: userId, error });
+    throwSupabaseError(`${table}.delete.missingIdentifier`, error, payload);
   }
 
   const deleteByLocalIdQuery = supabase
@@ -884,10 +951,19 @@ export async function deleteRecordFromSupabase(table: TableName, userId: string,
   const { error, count } = await deleteByLocalIdQuery.eq("local_id", fallbackLocalId);
 
   if (error) {
-    throwSupabaseError(`${table}.deleteByLocalId`, error, { user_id: userId, local_id: fallbackLocalId });
+    console.error("SUPABASE DELETE ERROR", { table, id, local_id: fallbackLocalId, user_id: userId, error });
+    throwSupabaseError(`${table}.deleteByLocalId`, error, payload);
   }
 
   if ((count ?? 0) === 0) {
-    throw new SupabaseSyncError("Cartao nao encontrado no Supabase para exclusao.");
+    const error = new SupabaseSyncError(`${resolvedLabel} nao encontrado no Supabase para exclusao.`);
+    console.error("SUPABASE DELETE ERROR", { table, id, local_id: fallbackLocalId, user_id: userId, error });
+    throwSupabaseError(`${table}.delete.notFound`, error, payload);
   }
+
+  return true;
+}
+
+export async function deleteRecordFromSupabase(table: TableName, userId: string, recordId: string, recordLocalId?: string) {
+  return deleteSupabaseRecord({ table, id: recordId, local_id: recordLocalId, user_id: userId });
 }
