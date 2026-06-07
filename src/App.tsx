@@ -225,6 +225,37 @@ function getRedemptionMonthIndex(dateValue: string) {
   return undefined;
 }
 
+function getMonthKeyFromDate(dateValue: string | undefined, fallbackDate = new Date()) {
+  const trimmedDate = dateValue?.trim() ?? "";
+  const brazilianDate = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(trimmedDate);
+  if (brazilianDate) {
+    const month = Number(brazilianDate[2]);
+    const year = Number(brazilianDate[3]);
+    if (month >= 1 && month <= 12 && year > 0) {
+      return `${year}-${String(month).padStart(2, "0")}`;
+    }
+  }
+
+  const isoDate = /^(\d{4})-(\d{2})-(\d{2})/.exec(trimmedDate);
+  if (isoDate) {
+    const month = Number(isoDate[2]);
+    const year = Number(isoDate[1]);
+    if (month >= 1 && month <= 12 && year > 0) {
+      return `${year}-${String(month).padStart(2, "0")}`;
+    }
+  }
+
+  return `${fallbackDate.getFullYear()}-${String(fallbackDate.getMonth() + 1).padStart(2, "0")}`;
+}
+
+function formatMonthKey(monthKey: string) {
+  const [year, month] = monthKey.split("-");
+  const monthIndex = Number(month) - 1;
+  const monthNames = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
+
+  return `${monthNames[monthIndex] ?? month}/${year}`;
+}
+
 const initialData: AppData = {
   id: "client-demo-1",
   localId: "client-demo-1",
@@ -2006,9 +2037,9 @@ function Dashboard({ data, goTo }: { data: AppData; goTo: (section: Section) => 
               </defs>
               <CartesianGrid strokeDasharray="3 3" vertical={false} />
               <XAxis dataKey="month" />
-              <YAxis tickFormatter={(value) => `${Number(value) / 1000}k`} />
-              <Tooltip formatter={(value) => `${number.format(Number(value))} milhas`} />
-              <Area type="monotone" dataKey="milhas" stroke={rmOrange} strokeWidth={3} fill="url(#orangeArea)" />
+              <YAxis tickFormatter={(value) => currency.format(Number(value)).replace(",00", "")} />
+              <Tooltip formatter={(value) => currency.format(Number(value))} />
+              <Area type="monotone" dataKey="patrimonio" stroke={rmOrange} strokeWidth={3} fill="url(#orangeArea)" />
             </AreaChart>
           </ResponsiveContainer>
         </ChartPanel>
@@ -3443,11 +3474,25 @@ function useMetrics(data: AppData) {
 
 function useMonthlyCharts(data: AppData) {
   return useMemo(() => {
-    const months = ["Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez", "Jan", "Fev", "Mar", "Abr", "Mai"];
     const calendarMonths = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
-    const milesWithBonus = data.milesPrograms.reduce((sum, program) => sum + getAirlineBalance(data, program), 0);
-    const pointsTotal = data.cards.reduce((sum, card) => sum + card.pointsBalance, 0) + data.pointsPrograms.reduce((sum, program) => sum + getBankAvailableBalance(data, program), 0);
-    const totalMiles = milesWithBonus + pointsTotal;
+    const patrimonyByMonth = new Map<string, number>();
+    const addPatrimonyToMonth = (dateValue: string | undefined, patrimony: number) => {
+      const monthKey = getMonthKeyFromDate(dateValue);
+      patrimonyByMonth.set(monthKey, (patrimonyByMonth.get(monthKey) ?? 0) + patrimony);
+    };
+
+    for (const program of data.pointsPrograms) {
+      addPatrimonyToMonth(program.expirationDate, program.balance * parseCpmInput(program.cpm));
+    }
+
+    for (const program of data.milesPrograms) {
+      addPatrimonyToMonth(program.expirationDate, getAirlineBalance(data, program) * parseCpmInput(program.cpm));
+    }
+
+    if (patrimonyByMonth.size === 0) {
+      patrimonyByMonth.set(getMonthKeyFromDate(undefined), 0);
+    }
+
     const economiesByMonth = data.redemptions.reduce(
       (totals, redemption) => {
         const monthIndex = getRedemptionMonthIndex(redemption.date);
@@ -3460,7 +3505,9 @@ function useMonthlyCharts(data: AppData) {
     );
 
     return {
-      evolution: months.map((month, index) => ({ month, milhas: Math.round(totalMiles * (0.48 + index * 0.047)) })),
+      evolution: Array.from(patrimonyByMonth.entries())
+        .sort(([leftMonth], [rightMonth]) => leftMonth.localeCompare(rightMonth))
+        .map(([monthKey, patrimony]) => ({ month: formatMonthKey(monthKey), patrimonio: patrimony })),
       economies: calendarMonths.map((month, index) => ({ month, economia: economiesByMonth[index] })),
     };
   }, [data]);
