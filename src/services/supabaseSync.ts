@@ -850,21 +850,44 @@ export async function saveGoalToSupabase(userId: string, clientId: string, goal:
   return { ...goal, localId: recordLocalId, id: await saveByIdOrExternalId("goals", primaryPayload, fallbackPayload, goal.id) };
 }
 
-export async function deleteRecordFromSupabase(table: TableName, userId: string, recordId: string) {
+export async function deleteRecordFromSupabase(table: TableName, userId: string, recordId: string, recordLocalId?: string) {
   ensureOnline();
 
-  if (!isUuid(recordId)) {
-    console.warn("Registro sem id real do Supabase. Removendo apenas do estado/cache.", { table, recordId });
-    return;
+  const fallbackLocalId = recordLocalId || recordId;
+
+  if (isUuid(recordId)) {
+    const { error, count } = await supabase
+      .from(table)
+      .delete({ count: "exact" })
+      .eq("id", recordId)
+      .eq("user_id", userId);
+
+    if (error) {
+      throwSupabaseError(`${table}.delete`, error, { user_id: userId, id: recordId });
+    }
+
+    if ((count ?? 0) > 0) {
+      return;
+    }
   }
 
-  const { error } = await supabase
+  if (!fallbackLocalId) {
+    throw new SupabaseSyncError("Registro sem id real ou local_id para excluir no Supabase.");
+  }
+
+  const deleteByLocalIdQuery = supabase
     .from(table)
-    .delete()
-    .eq("id", recordId)
-    .eq("user_id", userId);
+    .delete({ count: "exact" })
+    .eq("user_id", userId) as ReturnType<typeof supabase.from> & {
+      eq(column: "local_id", value: string): Promise<{ error: unknown; count: number | null }>;
+    };
+  const { error, count } = await deleteByLocalIdQuery.eq("local_id", fallbackLocalId);
 
   if (error) {
-    throwSupabaseError(`${table}.delete`, error, { user_id: userId, id: recordId });
+    throwSupabaseError(`${table}.deleteByLocalId`, error, { user_id: userId, local_id: fallbackLocalId });
+  }
+
+  if ((count ?? 0) === 0) {
+    throw new SupabaseSyncError("Cartao nao encontrado no Supabase para exclusao.");
   }
 }

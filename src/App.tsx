@@ -1425,11 +1425,7 @@ export default function App() {
   }
 
   async function deleteCard(card: CreditCardRecord) {
-    if (!isUuid(card.id)) {
-      console.warn("Cartao sem id real do Supabase. Removendo apenas do estado/cache.", card.id);
-      return true;
-    }
-    return Boolean(await runSingleRecordSync("credit_cards.delete", (userId) => deleteRecordFromSupabase("credit_cards", userId, card.id).then(() => true)));
+    return Boolean(await runSingleRecordSync("credit_cards.delete", (userId) => deleteRecordFromSupabase("credit_cards", userId, card.id, card.localId).then(() => true)));
   }
 
   async function createPointsProgram(program: PointsProgram) {
