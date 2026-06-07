@@ -2871,7 +2871,7 @@ function RedemptionsModule({
 
   async function addRedemption() {
     if (!draft.date || !draft.origin || !draft.destination) return;
-    const milesUsed = Number(draft.milesUsed);
+    const milesUsed = parseMilesInput(draft.milesUsed);
     const cpm = parseCpmInput(draft.cpm);
     const airportFee = Number(draft.airportFee);
     const totalCost = milesUsed * cpm + airportFee;
@@ -2961,7 +2961,7 @@ function RedemptionsModule({
         </div>
         <Input placeholder="Companhia" value={draft.airline} onChange={(value) => setDraft({ ...draft, airline: value })} />
         <Input placeholder="Valor dinheiro" type="number" value={draft.regularPrice} onChange={(value) => setDraft({ ...draft, regularPrice: value })} />
-        <Input placeholder="Milhas" type="number" value={draft.milesUsed} onChange={(value) => setDraft({ ...draft, milesUsed: value })} />
+        <Input placeholder="Milhas" type="text" inputMode="numeric" value={draft.milesUsed} onChange={(value) => setDraft({ ...draft, milesUsed: value })} />
         <Input placeholder="CPM" type="text" inputMode="decimal" value={draft.cpm} onChange={(value) => setDraft({ ...draft, cpm: value })} />
         <Input placeholder="Taxa aeroportuaria" type="number" value={draft.airportFee} onChange={(value) => setDraft({ ...draft, airportFee: value })} />
         <div className="flex gap-2">
@@ -2985,7 +2985,7 @@ function RedemptionsModule({
               <Td>{redemption.origin} - {redemption.destination}</Td>
               <Td>{redemption.airline}</Td>
               <Td>{currency.format(redemption.regularPrice)}</Td>
-              <Td>{formatMiles(redemption.milesUsed)}</Td>
+              <Td>{formatMileagePoints(redemption.milesUsed)}</Td>
               <Td>{redemption.cpm !== undefined ? formatCpm(redemption.cpm) : "-"}</Td>
               <Td>{currency.format(costs.airportFee)}</Td>
               <Td>{currency.format(costs.totalCost)}</Td>
