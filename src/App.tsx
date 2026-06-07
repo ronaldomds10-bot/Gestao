@@ -207,6 +207,23 @@ function getRedemptionCosts(redemption: FlightRedemption) {
   return { airportFee, milesCost, totalCost, economy };
 }
 
+function getRedemptionMonthIndex(dateValue: string) {
+  const trimmedDate = dateValue.trim();
+  const brazilianDate = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(trimmedDate);
+  if (brazilianDate) {
+    const month = Number(brazilianDate[2]);
+    return month >= 1 && month <= 12 ? month - 1 : undefined;
+  }
+
+  const isoDate = /^(\d{4})-(\d{2})-(\d{2})/.exec(trimmedDate);
+  if (isoDate) {
+    const month = Number(isoDate[2]);
+    return month >= 1 && month <= 12 ? month - 1 : undefined;
+  }
+
+  return undefined;
+}
+
 const initialData: AppData = {
   id: "client-demo-1",
   localId: "client-demo-1",
@@ -3284,17 +3301,24 @@ function useMetrics(data: AppData) {
 function useMonthlyCharts(data: AppData) {
   return useMemo(() => {
     const months = ["Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez", "Jan", "Fev", "Mar", "Abr", "Mai"];
+    const calendarMonths = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"];
     const milesWithBonus = data.milesPrograms.reduce((sum, program) => sum + getAirlineBalance(data, program), 0);
     const pointsTotal = data.cards.reduce((sum, card) => sum + card.pointsBalance, 0) + data.pointsPrograms.reduce((sum, program) => sum + getBankAvailableBalance(data, program), 0);
     const totalMiles = milesWithBonus + pointsTotal;
+    const economiesByMonth = data.redemptions.reduce(
+      (totals, redemption) => {
+        const monthIndex = getRedemptionMonthIndex(redemption.date);
+        if (monthIndex !== undefined) {
+          totals[monthIndex] += getRedemptionCosts(redemption).economy;
+        }
+        return totals;
+      },
+      Array(12).fill(0) as number[],
+    );
+
     return {
       evolution: months.map((month, index) => ({ month, milhas: Math.round(totalMiles * (0.48 + index * 0.047)) })),
-      economies: months.slice(6).map((month, index) => {
-        const economy = data.redemptions
-          .filter((_, redemptionIndex) => redemptionIndex % 6 === index)
-          .reduce((sum, redemption) => sum + getRedemptionCosts(redemption).economy, 0);
-        return { month, economia: economy };
-      }),
+      economies: calendarMonths.map((month, index) => ({ month, economia: economiesByMonth[index] })),
     };
   }, [data]);
 }
