@@ -19,6 +19,7 @@ import {
   Flag,
   LayoutDashboard,
   LogOut,
+  Menu,
   Plane,
   Pencil,
   Plus,
@@ -27,6 +28,7 @@ import {
   Trash2,
   User,
   WalletCards,
+  X,
 } from "lucide-react";
 import { supabase } from "./lib/supabase/client";
 import { ensureUserProfile } from "./lib/supabase/ensureUserProfile";
@@ -74,7 +76,7 @@ type Section =
 const rmOrange = "#f97316";
 const chartColors = ["#f97316", "#0f766e", "#2563eb", "#7c3aed", "#eab308", "#64748b"];
 const mileValue = 0.025;
-const appShellClass = "min-h-screen bg-[#071529] text-white";
+const appShellClass = "min-h-screen overflow-x-hidden bg-[#071529] text-white";
 const panelClass = "rounded-lg border border-[#1E3A5F] bg-[#0F1F38] text-white shadow";
 const softPanelClass = "rounded-lg border border-[#1E3A5F] bg-[#233B5D] text-white";
 const mutedTextClass = "text-[#CBD5E1]";
@@ -1279,6 +1281,7 @@ export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [activeSection, setActiveSection] = useState<Section>("dashboard");
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [clients, setClients] = useState<AppData[]>([]);
   const [activeClientId, setActiveClientId] = useState("");
   const [migrationSummary, setMigrationSummary] = useState<MigrationSummary | null>(null);
@@ -1726,19 +1729,27 @@ export default function App() {
 
       <div className="xl:pl-72">
         <header className="sticky top-0 z-20 border-b border-[#1E3A5F] bg-[#0F1F38]/95 backdrop-blur">
-          <div className="flex items-center justify-between px-4 py-4 sm:px-6 lg:px-8">
-            <div className="xl:hidden">
+          <div className="mobile-header flex items-center justify-between gap-3 px-4 py-4 sm:px-6 lg:px-8">
+            <div className="min-w-0 xl:hidden">
               <BrandInline />
             </div>
             <div className="hidden xl:block">
               <p className={"text-sm font-medium " + mutedTextClass}>RM Milhas</p>
               <h1 className="text-xl font-semibold text-slate-50">Onde pontos se transformam em patrimonio e viagens inesqueciveis.</h1>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="mobile-header-actions flex min-w-0 items-center gap-2">
+              <button
+                className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-md border border-[#3B5B82] bg-[#233B5D] text-white shadow-sm transition hover:bg-[#314863] xl:hidden"
+                onClick={() => setIsMobileMenuOpen((current) => !current)}
+                aria-label={isMobileMenuOpen ? "Fechar menu" : "Abrir menu"}
+                aria-expanded={isMobileMenuOpen}
+              >
+                {isMobileMenuOpen ? <X size={20} /> : <Menu size={20} />}
+              </button>
               <select
                 value={activeClientId}
                 onChange={(event) => setActiveClientId(event.currentTarget.value)}
-                className={"hidden px-3 py-2 text-sm font-medium md:block " + inputClass}
+                className={"client-select min-w-0 px-3 py-2 text-sm font-medium " + inputClass}
               >
                 {clients.map((client) => (
                   <option key={client.id} value={client.id}>
@@ -1771,24 +1782,33 @@ export default function App() {
               </button>
             </div>
           </div>
-          <nav className="flex gap-2 overflow-x-auto px-4 pb-3 xl:hidden">
-            {navItems.map((item) => (
-              <button
-                key={item.id}
-                onClick={() => setActiveSection(item.id)}
-                className={`shrink-0 rounded-md px-3 py-2 text-sm font-medium ${
-                  activeSection === item.id
-                    ? "bg-[#A855F7] text-white"
-                    : "bg-[#233B5D] text-[#CBD5E1] hover:bg-[#314863]"
-                }`}
-              >
-                {item.label}
-              </button>
-            ))}
-          </nav>
+          {isMobileMenuOpen && (
+            <nav className="mobile-nav grid gap-2 border-t border-[#1E3A5F] px-4 py-3 xl:hidden">
+              {navItems.map((item) => {
+                const Icon = item.icon;
+                return (
+                  <button
+                    key={item.id}
+                    onClick={() => {
+                      setActiveSection(item.id);
+                      setIsMobileMenuOpen(false);
+                    }}
+                    className={`flex min-h-11 items-center gap-3 rounded-md px-3 py-2 text-left text-sm font-medium ${
+                      activeSection === item.id
+                        ? "bg-[#A855F7] text-white"
+                        : "bg-[#233B5D] text-[#CBD5E1] hover:bg-[#314863]"
+                    }`}
+                  >
+                    <Icon size={18} />
+                    {item.label}
+                  </button>
+                );
+              })}
+            </nav>
+          )}
         </header>
 
-        <main className="px-4 py-6 sm:px-6 lg:px-8">
+        <main className="app-main px-4 py-6 sm:px-6 lg:px-8">
           {autoMigrationMessage && (
             <div className="mx-auto mb-4 max-w-7xl rounded-md border border-[#10B981]/30 bg-[#10B981]/10 px-4 py-3 text-sm font-medium text-[#A7F3D0]">
               {autoMigrationMessage}
@@ -1918,8 +1938,8 @@ function Dashboard({ data, goTo }: { data: AppData; goTo: (section: Section) => 
         description="Acompanhe seu patrimonio em milhas, economias geradas e metas de viagem em uma unica tela."
       />
 
-      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <button onClick={() => goTo("programs")} className="group relative overflow-hidden rounded-xl border border-[#1E3A5F] bg-[#0F1F38] p-6 text-left transition hover:border-[#A855F7] hover:shadow-lg hover:shadow-[#A855F7]/10">
+      <section className="dashboard-kpi-grid grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <button onClick={() => goTo("programs")} className="dashboard-kpi-card group relative overflow-hidden rounded-xl border border-[#1E3A5F] bg-[#0F1F38] p-6 text-left transition hover:border-[#A855F7] hover:shadow-lg hover:shadow-[#A855F7]/10">
           <div className="absolute inset-0 bg-gradient-to-br from-[#A855F7]/0 to-[#A855F7]/0 transition group-hover:from-[#A855F7]/5 group-hover:to-[#A855F7]/10"></div>
           <div className="relative z-10">
             <p className={"text-sm font-medium " + mutedTextClass}>Patrimonio em Milhas</p>
@@ -1932,7 +1952,7 @@ function Dashboard({ data, goTo }: { data: AppData; goTo: (section: Section) => 
           </div>
         </button>
 
-        <button onClick={() => goTo("redemptions")} className="group relative overflow-hidden rounded-xl border border-[#1E3A5F] bg-[#0F1F38] p-6 text-left transition hover:border-[#10B981] hover:shadow-lg hover:shadow-[#10B981]/10">
+        <button onClick={() => goTo("redemptions")} className="dashboard-kpi-card group relative overflow-hidden rounded-xl border border-[#1E3A5F] bg-[#0F1F38] p-6 text-left transition hover:border-[#10B981] hover:shadow-lg hover:shadow-[#10B981]/10">
           <div className="absolute inset-0 bg-gradient-to-br from-teal-500/0 to-teal-500/0 group-hover:from-teal-500/5 group-hover:to-teal-500/10 transition"></div>
           <div className="relative z-10">
             <p className={"text-sm font-medium " + mutedTextClass}>Economia Total</p>
@@ -1941,7 +1961,7 @@ function Dashboard({ data, goTo }: { data: AppData; goTo: (section: Section) => 
           </div>
         </button>
 
-        <button onClick={() => goTo("programs")} className="group relative overflow-hidden rounded-xl border border-[#1E3A5F] bg-[#0F1F38] p-6 text-left transition hover:border-[#FF5A00] hover:shadow-lg hover:shadow-[#FF5A00]/10">
+        <button onClick={() => goTo("programs")} className="dashboard-kpi-card group relative overflow-hidden rounded-xl border border-[#1E3A5F] bg-[#0F1F38] p-6 text-left transition hover:border-[#FF5A00] hover:shadow-lg hover:shadow-[#FF5A00]/10">
           <div className="absolute inset-0 bg-gradient-to-br from-yellow-500/0 to-yellow-500/0 group-hover:from-yellow-500/5 group-hover:to-yellow-500/10 transition"></div>
           <div className="relative z-10">
             <p className={"text-sm font-medium " + mutedTextClass}>Milhas Aereas (com bonus)</p>
@@ -1952,7 +1972,7 @@ function Dashboard({ data, goTo }: { data: AppData; goTo: (section: Section) => 
           </div>
         </button>
 
-        <button onClick={() => goTo("goals")} className="group relative overflow-hidden rounded-xl border border-[#1E3A5F] bg-[#0F1F38] p-6 text-left transition hover:border-[#A855F7] hover:shadow-lg hover:shadow-[#A855F7]/10">
+        <button onClick={() => goTo("goals")} className="dashboard-kpi-card group relative overflow-hidden rounded-xl border border-[#1E3A5F] bg-[#0F1F38] p-6 text-left transition hover:border-[#A855F7] hover:shadow-lg hover:shadow-[#A855F7]/10">
           <div className="absolute inset-0 bg-gradient-to-br from-[#A855F7]/0 to-[#A855F7]/0 transition group-hover:from-[#A855F7]/5 group-hover:to-[#A855F7]/10"></div>
           <div className="relative z-10">
             <p className={"text-sm font-medium " + mutedTextClass}>Meta Atual</p>
@@ -3334,7 +3354,7 @@ function SectionHeader({ eyebrow, title, description }: { eyebrow: string; title
 
 function KpiCard({ title, value, detail }: { title: string; value: string; detail: string }) {
   return (
-    <div className={panelClass + " p-5"}>
+    <div className={panelClass + " mobile-card p-5"}>
       <p className={"text-sm font-medium " + mutedTextClass}>{title}</p>
       <p className="mt-3 text-2xl font-bold text-slate-50">{value}</p>
       <p className={"mt-2 text-sm " + mutedTextClass}>{detail}</p>
@@ -3353,7 +3373,7 @@ function ChartPanel({
 }) {
   return (
     <div
-      className={`rounded-xl border border-[#1E3A5F] bg-[#0F1F38] p-6 text-white shadow-sm transition ${
+      className={`chart-panel rounded-xl border border-[#1E3A5F] bg-[#0F1F38] p-6 text-white shadow-sm transition ${
         onClick ? "cursor-pointer hover:border-[#A855F7] hover:shadow-lg hover:shadow-[#A855F7]/10" : ""
       }`}
       onClick={onClick}
@@ -3366,10 +3386,10 @@ function ChartPanel({
 
 function CrudShell({ title, description, totalLabel, totalValue, children }: { title: string; description: string; totalLabel: string; totalValue: string; children: React.ReactNode }) {
   return (
-    <div className="mx-auto max-w-7xl space-y-6">
-      <div className="flex flex-col justify-between gap-4 border-b border-[#1E3A5F] pb-5 md:flex-row md:items-end">
+    <div className="crud-shell mx-auto max-w-7xl space-y-6">
+      <div className="crud-shell-header flex flex-col justify-between gap-4 border-b border-[#1E3A5F] pb-5 md:flex-row md:items-end">
         <SectionHeader eyebrow="Modulo" title={title} description={description} />
-        <div className="rounded-lg border border-[#1E3A5F] bg-[#233B5D] px-5 py-4">
+        <div className="crud-total rounded-lg border border-[#1E3A5F] bg-[#233B5D] px-5 py-4">
           <p className="text-xs font-semibold uppercase text-[#CBD5E1]">{totalLabel}</p>
           <p className="mt-1 text-xl font-semibold text-white">{totalValue}</p>
         </div>
@@ -3381,8 +3401,8 @@ function CrudShell({ title, description, totalLabel, totalValue, children }: { t
 
 function DataTable({ headers, children }: { headers: string[]; children: React.ReactNode }) {
   return (
-    <div className="overflow-hidden rounded border border-[#1E3A5F]">
-      <table className="w-full min-w-[760px] text-left text-sm">
+    <div className="data-table-wrap overflow-x-auto rounded border border-[#1E3A5F]">
+      <table className="w-full min-w-[760px] whitespace-nowrap text-left text-sm">
         <thead className="bg-[#314863] text-xs uppercase text-white">
           <tr>{headers.map((header) => <th key={header} className="px-4 py-3 font-semibold">{header}</th>)}</tr>
         </thead>
@@ -3398,8 +3418,8 @@ function Td({ children, align = "left" }: { children: React.ReactNode; align?: "
 
 function DeleteButton({ onClick }: { onClick: () => void }) {
   return (
-    <button onClick={onClick} className="inline-flex h-9 w-9 items-center justify-center rounded text-red-300 transition hover:bg-red-500/10">
-      <Trash2 size={16} />
+    <button onClick={onClick} className="inline-flex h-11 w-11 items-center justify-center rounded text-red-300 transition hover:bg-red-500/10">
+      <Trash2 size={18} />
     </button>
   );
 }
@@ -3416,7 +3436,7 @@ function IndicatorCard({
   detail: string;
 }) {
   return (
-    <div className="min-w-[160px] rounded-lg border border-[#1E3A5F] bg-[#233B5D] p-4">
+    <div className="mobile-card min-w-[160px] rounded-lg border border-[#1E3A5F] bg-[#233B5D] p-4">
       <div className="flex items-center gap-2">
         <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: color }} />
         <p className="text-xs font-semibold uppercase text-[#CBD5E1]">{label}</p>
@@ -3438,7 +3458,7 @@ function ProgramBadge({ color, label }: { color: string; label: string }) {
 
 function SimulatorMetric({ color, label, value }: { color: string; label: string; value: string }) {
   return (
-    <div className="rounded-lg border border-[#1E3A5F] bg-[#233B5D] p-4">
+    <div className="mobile-card rounded-lg border border-[#1E3A5F] bg-[#233B5D] p-4">
       <div className="flex items-center gap-2">
         <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: color }} />
         <p className="text-xs font-semibold uppercase text-[#CBD5E1]">{label}</p>
@@ -3453,13 +3473,13 @@ function Field(props: React.InputHTMLAttributes<HTMLInputElement> & { label: str
   return (
     <label className="block">
       <span className={"text-sm " + mutedTextClass}>{label}</span>
-      <input {...inputProps} className={"mt-2 w-full px-3 py-2.5 text-sm " + inputClass} />
+      <input {...inputProps} className={"mt-2 min-h-11 w-full px-3 py-2.5 text-sm " + inputClass} />
     </label>
   );
 }
 
 function Input({ value, onChange, ...props }: Omit<React.InputHTMLAttributes<HTMLInputElement>, "onChange"> & { onChange: (value: string) => void }) {
-  return <input {...props} value={value} onChange={(event) => onChange(event.currentTarget.value)} className={"w-full px-3 py-2.5 text-sm " + inputClass} />;
+  return <input {...props} value={value} onChange={(event) => onChange(event.currentTarget.value)} className={"min-h-11 w-full px-3 py-2.5 text-sm " + inputClass} />;
 }
 
 function Select({
@@ -3474,7 +3494,7 @@ function Select({
   onChange: (value: string) => void;
 }) {
   return (
-    <select value={value} onChange={(event) => onChange(event.currentTarget.value)} className={"w-full px-3 py-2.5 text-sm " + inputClass}>
+    <select value={value} onChange={(event) => onChange(event.currentTarget.value)} className={"min-h-11 w-full px-3 py-2.5 text-sm " + inputClass}>
       {options.map((option) => <option key={option} value={option}>{labels?.[option] ?? option}</option>)}
     </select>
   );

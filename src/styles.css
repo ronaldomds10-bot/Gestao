@@ -18,6 +18,7 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
+  overflow-x: hidden;
   background:
     radial-gradient(circle at top right, rgba(249, 115, 22, 0.12), transparent 32rem),
     #f8fafc;
@@ -30,6 +31,10 @@ select {
   font: inherit;
 }
 
+button {
+  touch-action: manipulation;
+}
+
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
@@ -38,4 +43,214 @@ select {
 ::-webkit-scrollbar-thumb {
   background: #cbd5e1;
   border-radius: 999px;
+}
+
+@media (max-width: 768px) {
+  html,
+  body,
+  #root {
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+
+  .app-main {
+    padding: 1rem;
+  }
+
+  .mobile-header {
+    flex-wrap: wrap;
+    align-items: flex-start;
+    padding: 0.875rem 1rem;
+  }
+
+  .mobile-header > div:first-child {
+    flex: 1 1 11rem;
+    max-width: calc(100% - 4rem);
+  }
+
+  .mobile-header-actions {
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .client-select {
+    flex: 1 1 12rem;
+    max-width: 100%;
+    min-height: 44px;
+  }
+
+  .mobile-nav {
+    max-height: calc(100vh - 8rem);
+    overflow-y: auto;
+  }
+
+  .dashboard-kpi-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .dashboard-kpi-card,
+  .mobile-card,
+  .chart-panel,
+  .crud-total {
+    padding: 1rem;
+  }
+
+  .dashboard-kpi-card p[class*="text-3xl"] {
+    font-size: 1.5rem;
+    line-height: 2rem;
+  }
+
+  .crud-shell {
+    max-width: 100%;
+  }
+
+  .crud-shell-header {
+    gap: 1rem;
+    padding-bottom: 1rem;
+  }
+
+  .crud-total {
+    width: 100%;
+  }
+
+  section,
+  .crud-shell,
+  .chart-panel {
+    min-width: 0;
+  }
+
+  .grid {
+    min-width: 0;
+  }
+
+  input,
+  select,
+  button {
+    min-height: 44px;
+  }
+
+  input,
+  select {
+    max-width: 100%;
+  }
+
+  .grid > input,
+  .grid > select,
+  .grid > .relative,
+  .grid > label {
+    min-width: 0;
+  }
+
+  .grid > .flex {
+    flex-wrap: wrap;
+    gap: 0.625rem;
+  }
+
+  .grid > .flex > button {
+    flex: 1 1 10rem;
+    justify-content: center;
+  }
+
+  .data-table-wrap {
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .data-table-wrap table {
+    min-width: 720px;
+  }
+
+  .data-table-wrap th,
+  .data-table-wrap td {
+    padding: 0.75rem;
+    white-space: nowrap;
+  }
+
+  button[title^="Editar"],
+  button[title^="Remover"] {
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+  }
+
+  header h1,
+  .crud-shell h1 {
+    font-size: 1.75rem;
+    line-height: 2.125rem;
+  }
+}
+
+@media (max-width: 480px) {
+  .app-main {
+    padding: 0.875rem;
+  }
+
+  .mobile-header {
+    gap: 0.75rem;
+    padding: 0.75rem;
+  }
+
+  .mobile-header-actions {
+    justify-content: stretch;
+  }
+
+  .mobile-header-actions > button,
+  .mobile-header-actions > select {
+    flex: 1 1 auto;
+  }
+
+  .mobile-header-actions > button:first-child {
+    flex: 0 0 44px;
+  }
+
+  .client-select {
+    flex-basis: 100%;
+    font-size: 0.875rem;
+  }
+
+  .mobile-nav {
+    padding: 0.75rem;
+  }
+
+  header h1,
+  .crud-shell h1 {
+    font-size: 1.5rem;
+    line-height: 1.875rem;
+  }
+
+  header p,
+  .crud-shell p {
+    font-size: 0.8125rem;
+  }
+
+  .dashboard-kpi-card,
+  .mobile-card,
+  .chart-panel,
+  .crud-total {
+    padding: 0.875rem;
+  }
+
+  .chart-panel > div {
+    height: 260px;
+  }
+
+  .grid {
+    gap: 0.875rem;
+  }
+
+  .grid > .flex > button {
+    width: 100%;
+  }
+
+  .data-table-wrap table {
+    min-width: 680px;
+    font-size: 0.8125rem;
+  }
+
+  .data-table-wrap th,
+  .data-table-wrap td {
+    padding: 0.625rem;
+  }
 }
