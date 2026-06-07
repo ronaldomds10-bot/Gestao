@@ -1,0 +1,1 @@
+id,user_id,client_id,miles_program_id,origin,destination,departure_date,return_date,miles_used,cash_cost,taxes,sale_price,status,notes,created_at,updated_at,redemption_date,airline,regular_price,paid_price,cpm,airport_fee
