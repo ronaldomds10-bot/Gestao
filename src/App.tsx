@@ -1958,8 +1958,35 @@ function Dashboard({ data, goTo }: { data: AppData; goTo: (section: Section) => 
       patrimony: balance * parseCpmInput(program.cpm),
     };
   });
-  const hasMilesDistribution = milesDistribution.some((program) => program.balance > 0);
   const estimatedAirlineValue = milesDistribution.reduce((sum, program) => sum + program.patrimony, 0);
+  const totalPointsAndMiles = metrics.totalPoints + metrics.milesWithBonus;
+  const pointsAndMilesDistribution = [
+    ...data.pointsPrograms.map((program) => {
+      const balance = getBankAvailableBalance(data, program);
+      return {
+        id: `points-${program.id}`,
+        name: program.programName,
+        type: "Pontos",
+        balance,
+        balanceLabel: "pontos",
+        percentage: totalPointsAndMiles > 0 ? (balance / totalPointsAndMiles) * 100 : 0,
+        patrimony: balance * parseCpmInput(program.cpm),
+      };
+    }),
+    ...data.milesPrograms.map((program) => {
+      const balance = getAirlineBalance(data, program);
+      return {
+        id: `miles-${program.id}`,
+        name: program.airline,
+        type: "Milhas",
+        balance,
+        balanceLabel: "milhas",
+        percentage: totalPointsAndMiles > 0 ? (balance / totalPointsAndMiles) * 100 : 0,
+        patrimony: balance * parseCpmInput(program.cpm),
+      };
+    }),
+  ];
+  const hasPointsAndMilesDistribution = pointsAndMilesDistribution.some((program) => program.balance > 0);
 
   return (
     <div className="mx-auto max-w-7xl">
@@ -2044,37 +2071,40 @@ function Dashboard({ data, goTo }: { data: AppData; goTo: (section: Section) => 
           </ResponsiveContainer>
         </ChartPanel>
 
-        <ChartPanel title="Distribuicao das milhas" onClick={() => goTo("programs")}>
-          {milesDistribution.length === 0 ? (
-            <div className="flex h-full items-center justify-center text-sm text-[#CBD5E1]">Nenhuma milha cadastrada ainda</div>
+        <ChartPanel title="Distribuicao de pontos e milhas" onClick={() => goTo("programs")}>
+          {pointsAndMilesDistribution.length === 0 ? (
+            <div className="flex h-full items-center justify-center text-sm text-[#CBD5E1]">Nenhum ponto ou milha cadastrado ainda</div>
           ) : (
             <div className="grid h-full gap-4 lg:grid-cols-[0.9fr_1.1fr]">
               <div className="min-h-0">
-                {hasMilesDistribution ? (
+                {hasPointsAndMilesDistribution ? (
                   <ResponsiveContainer width="100%" height="100%">
                     <PieChart>
-                      <Pie data={milesDistribution} dataKey="balance" nameKey="airline" innerRadius={48} outerRadius={88} paddingAngle={2}>
-                        {milesDistribution.map((program, index) => (
+                      <Pie data={pointsAndMilesDistribution} dataKey="balance" nameKey="name" innerRadius={48} outerRadius={88} paddingAngle={2}>
+                        {pointsAndMilesDistribution.map((program, index) => (
                           <Cell key={program.id} fill={chartColors[index % chartColors.length]} />
                         ))}
                       </Pie>
-                      <Tooltip formatter={(value) => `${formatMiles(Number(value))} milhas`} />
+                      <Tooltip formatter={(value) => `${formatMiles(Number(value))} pontos/milhas`} />
                     </PieChart>
                   </ResponsiveContainer>
                 ) : (
-                  <div className="flex h-full items-center justify-center text-sm text-[#CBD5E1]">Nenhuma milha cadastrada ainda</div>
+                  <div className="flex h-full items-center justify-center text-sm text-[#CBD5E1]">Nenhum ponto ou milha cadastrado ainda</div>
                 )}
               </div>
               <div className="min-h-0 space-y-3 overflow-y-auto pr-1">
-                {milesDistribution.map((program, index) => (
+                {pointsAndMilesDistribution.map((program, index) => (
                   <div key={program.id} className="rounded-lg border border-[#1E3A5F] bg-[#233B5D] p-3">
                     <div className="flex items-start justify-between gap-3">
                       <div>
-                        <p className="font-semibold text-white">{program.airline}</p>
-                        <p className={"mt-1 text-xs " + mutedTextClass}>{formatMiles(program.balance)} milhas</p>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="font-semibold text-white">{program.name}</p>
+                          <span className="rounded-full bg-[#0F1F38] px-2 py-0.5 text-[10px] font-semibold uppercase text-[#CBD5E1]">{program.type}</span>
+                        </div>
+                        <p className={"mt-1 text-xs " + mutedTextClass}>{formatMiles(program.balance)} {program.balanceLabel}</p>
                       </div>
                       <span className="rounded-full px-2.5 py-1 text-xs font-semibold text-white" style={{ backgroundColor: chartColors[index % chartColors.length] }}>
-                        {program.percentage}%
+                        {program.percentage.toLocaleString("pt-BR", { maximumFractionDigits: 1 })}%
                       </span>
                     </div>
                     <p className={"mt-2 text-xs " + mutedTextClass}>{currency.format(program.patrimony)}</p>
