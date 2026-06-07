@@ -2261,12 +2261,12 @@ function ProgramsModule({
     editingTransferOnly: false,
   });
 
-  const currentBankValue = data.pointsPrograms.reduce((sum, program) => sum + getBankAvailableBalance(data, program) * parseCpmInput(program.cpm), 0);
+  const currentPointsValue = data.pointsPrograms.reduce((sum, program) => sum + program.balance * parseCpmInput(program.cpm), 0);
   const currentAirlineValue = data.milesPrograms.reduce((sum, program) => {
     return sum + getAirlineBalance(data, program) * parseCpmInput(program.cpm);
   }, 0);
-  const currentPatrimony = currentBankValue + currentAirlineValue;
-  const totalBankPoints = data.pointsPrograms.reduce((sum, program) => sum + getBankAvailableBalance(data, program), 0);
+  const currentPatrimony = currentPointsValue + currentAirlineValue;
+  const totalPointsBalance = data.pointsPrograms.reduce((sum, program) => sum + program.balance, 0);
   const totalAirlineMiles = data.milesPrograms.reduce((sum, program) => sum + getAirlineBalance(data, program), 0);
   const resolvedDestinationName = draftPoints.destinationProgramName === "Outro..."
     ? draftPoints.customDestinationProgramName.trim()
@@ -2282,11 +2282,9 @@ function ProgramsModule({
   const finalMiles = getTransferFinalMiles({ sentAmount, bonusPercentage });
   const bonusMiles = getTransferBonusMiles({ sentAmount, bonusPercentage });
   const destinationCpm = selectedDestination ? parseCpmInput(selectedDestination.cpm) : airlineDefaultCpm[resolvedDestinationName] ?? 0.04;
-  const originCpm = parseCpmInput(draftPoints.cpm);
   const finalFinancialValue = finalMiles * destinationCpm;
-  const currentOriginValue = Math.min(sentAmount, availableOriginBalance) * originCpm;
   const promotionGain = bonusMiles * destinationCpm;
-  const potentialPatrimony = currentPatrimony - currentOriginValue + finalFinancialValue;
+  const potentialPatrimony = Math.max(promotionGain, 0);
 
   async function addMilesProgram() {
     const airlineName = draftMiles.airline === "Outro..." ? draftMiles.customAirline.trim() : draftMiles.airline;
@@ -2568,7 +2566,7 @@ function ProgramsModule({
             <p className={"mt-2 text-sm " + mutedTextClass}>Valor consolidado entre pontos, milhas e transferencias ja cadastradas.</p>
           </div>
           <div className="grid gap-3 sm:grid-cols-3">
-            <IndicatorCard color="#3B82F6" label="Bancos" value={`${number.format(totalBankPoints)} pts`} detail={currency.format(currentBankValue)} />
+            <IndicatorCard color="#3B82F6" label="Pontos" value={`${number.format(totalPointsBalance)} pts`} detail={currency.format(currentPointsValue)} />
             <IndicatorCard color="#FF5A00" label="Companhias" value={`${number.format(totalAirlineMiles)} mi`} detail={currency.format(currentAirlineValue)} />
             <IndicatorCard color="#10B981" label="Potencial" value={currency.format(potentialPatrimony)} detail={`+ ${currency.format(promotionGain)}`} />
           </div>
