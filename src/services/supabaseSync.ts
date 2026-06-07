@@ -23,6 +23,8 @@ export type PointsProgram = {
 export type BonusTransfer = {
   id: string;
   localId?: string;
+  pointsProgramId?: string;
+  milesProgramId?: string;
   originProgramName: string;
   destinationProgramName: string;
   sentAmount: number;
@@ -263,6 +265,7 @@ function getPointsProgramExternalId(clientId: string, program: PointsProgram) {
 
 function getPointsProgramRowKey(row: Record<string, any>) {
   return [
+    row.local_id ?? row.id,
     row.user_id,
     row.program_name ?? row.name ?? "",
     String(row.balance ?? 0),
@@ -299,6 +302,7 @@ function getMilesProgramExternalId(clientId: string, program: MilesProgram) {
 
 function getMilesProgramRowKey(row: Record<string, any>) {
   return [
+    row.local_id ?? row.id,
     row.user_id,
     row.airline ?? row.name ?? "",
     String(row.balance ?? 0),
@@ -536,6 +540,8 @@ export async function loadUserDataFromSupabase(userId: string, fallbackClients: 
     client.transfers.push({
       id: row.id,
       localId: row.local_id ?? row.id,
+      pointsProgramId: originId ?? undefined,
+      milesProgramId: destinationId ?? undefined,
       originProgramName: row.origin_program || row.origin_program_name || origin?.name || origin?.program_name || getNotesText(row.notes, "origem", ""),
       destinationProgramName: row.destination_program || row.destination_program_name || destination?.airline || destination?.name || getNotesText(row.notes, "destino", ""),
       sentAmount: Number(row.transferred_points ?? row.sent_amount ?? 0),
@@ -824,8 +830,8 @@ export async function saveTransferToSupabase(
 ) {
   const idPayload = isUuid(transfer.id) ? { id: transfer.id } : {};
   const recordLocalId = localId(transfer);
-  const originId = pointsPrograms.find((program) => program.programName === transfer.originProgramName)?.id ?? null;
-  const destinationId = milesPrograms.find((program) => program.airline === transfer.destinationProgramName)?.id ?? null;
+  const originId = transfer.pointsProgramId ?? pointsPrograms.find((program) => program.programName === transfer.originProgramName)?.id ?? null;
+  const destinationId = transfer.milesProgramId ?? milesPrograms.find((program) => program.airline === transfer.destinationProgramName)?.id ?? null;
   const primaryPayload = {
     ...idPayload,
     user_id: userId,
@@ -842,11 +848,17 @@ export async function saveTransferToSupabase(
   };
   const fallbackPayload = {
     ...primaryPayload,
+    points_program_id: originId,
+    miles_program_id: destinationId,
   };
 
-  void originId;
-  void destinationId;
-  return { ...transfer, localId: recordLocalId, id: await saveByIdOrExternalId("bonus_transfers", primaryPayload, fallbackPayload, transfer.id) };
+  return {
+    ...transfer,
+    localId: recordLocalId,
+    pointsProgramId: originId ?? undefined,
+    milesProgramId: destinationId ?? undefined,
+    id: await saveByIdOrExternalId("bonus_transfers", primaryPayload, fallbackPayload, transfer.id),
+  };
 }
 
 export async function saveRedemptionToSupabase(userId: string, clientId: string, redemption: FlightRedemption) {

@@ -15,6 +15,7 @@ import {
 } from "recharts";
 import {
   BadgeDollarSign,
+  Copy,
   CreditCard,
   Flag,
   LayoutDashboard,
@@ -664,6 +665,22 @@ function getTransferNotes(transfer: BonusTransfer) {
 
 function createLocalId() {
   return crypto.randomUUID();
+}
+
+function isTransferForPointsProgram(transfer: BonusTransfer, program: PointsProgram) {
+  if (transfer.pointsProgramId) {
+    return transfer.pointsProgramId === program.id || transfer.pointsProgramId === program.localId;
+  }
+
+  return transfer.originProgramName === program.programName;
+}
+
+function isTransferForMilesProgram(transfer: BonusTransfer, program: MilesProgram) {
+  if (transfer.milesProgramId) {
+    return transfer.milesProgramId === program.id || transfer.milesProgramId === program.localId;
+  }
+
+  return transfer.destinationProgramName === program.airline;
 }
 
 function getPointsProgramSaveKey(program: PointsProgram) {
@@ -2140,6 +2157,17 @@ function CardsModule({
     }
   }
 
+  async function duplicateCard(card: CreditCardRecord) {
+    const duplicatedCard: CreditCardRecord = {
+      ...card,
+      id: crypto.randomUUID(),
+      localId: createLocalId(),
+    };
+    const savedCard = await createCard(duplicatedCard);
+    if (!savedCard) return;
+    await updateData({ ...data, cards: [...data.cards, savedCard] });
+  }
+
   return (
     <CrudShell title="Cartoes" description="Controle bancos, limites, pontos acumulados e regras de pontuacao." totalLabel="Total de pontos" totalValue={number.format(total)}>
       <div className="grid gap-3 md:grid-cols-7">
@@ -2169,6 +2197,7 @@ function CardsModule({
             <Td>Dia {card.dueDay}</Td>
             <Td align="right">
               <div className="flex justify-end gap-1">
+                <DuplicateButton onClick={() => duplicateCard(card)} title="Duplicar cartao" />
                 <button onClick={() => editCard(card)} className="inline-flex h-9 w-9 items-center justify-center rounded text-[#CBD5E1] transition hover:bg-[#233B5D]" title="Editar cartao">
                   <Pencil size={16} />
                 </button>
@@ -2417,8 +2446,16 @@ function ProgramsModule({
 
     const savedTransfer = shouldSaveTransfer
       ? draftPoints.editingTransferId
-        ? await updateTransfer(transferRecord, pointsPrograms, milesPrograms)
-        : await createTransfer(transferRecord, pointsPrograms, milesPrograms)
+        ? await updateTransfer({
+            ...transferRecord,
+            pointsProgramId: savedPoint.id,
+            milesProgramId: milesPrograms.find((program) => program.airline === destinationProgramName)?.id,
+          }, pointsPrograms, milesPrograms)
+        : await createTransfer({
+            ...transferRecord,
+            pointsProgramId: savedPoint.id,
+            milesProgramId: milesPrograms.find((program) => program.airline === destinationProgramName)?.id,
+          }, pointsPrograms, milesPrograms)
       : null;
     if (shouldSaveTransfer && !savedTransfer) return;
 
@@ -2452,7 +2489,7 @@ function ProgramsModule({
   }
 
   function editPointsProgram(program: PointsProgram) {
-    const relatedTransfer = data.transfers.find((transfer) => transfer.originProgramName === program.programName);
+    const relatedTransfer = data.transfers.find((transfer) => isTransferForPointsProgram(transfer, program));
     const isCustomProgram = !bankProgramOptions.includes(program.programName);
     const destinationName = relatedTransfer?.destinationProgramName ?? "Smiles";
     const isCustomDestination = !airlineProgramOptions.includes(destinationName);
@@ -2473,7 +2510,11 @@ function ProgramsModule({
   }
 
   function editTransfer(transfer: BonusTransfer) {
-    const origin = data.pointsPrograms.find((program) => program.programName === transfer.originProgramName);
+    const origin = data.pointsPrograms.find((program) => (
+      transfer.pointsProgramId
+        ? transfer.pointsProgramId === program.id || transfer.pointsProgramId === program.localId
+        : program.programName === transfer.originProgramName
+    ));
     const isCustomOrigin = !bankProgramOptions.includes(transfer.originProgramName);
     const isCustomDestination = !airlineProgramOptions.includes(transfer.destinationProgramName);
     setDraftPoints({
@@ -2501,10 +2542,10 @@ function ProgramsModule({
     }
   }
 
-  async function deletePointsProgram(programId: string, programName: string) {
+  async function deletePointsProgram(programId: string) {
     const program = data.pointsPrograms.find((item) => item.id === programId);
     if (!program) return;
-    const relatedTransfers = data.transfers.filter((transfer) => transfer.originProgramName === programName);
+    const relatedTransfers = data.transfers.filter((transfer) => isTransferForPointsProgram(transfer, program));
     for (const transfer of relatedTransfers) {
       const deletedTransfer = await deleteTransferRecord(transfer);
       if (!deletedTransfer) return;
@@ -2514,7 +2555,7 @@ function ProgramsModule({
     await updateData({
       ...data,
       pointsPrograms: data.pointsPrograms.filter((item) => item.id !== programId),
-      transfers: data.transfers.filter((transfer) => transfer.originProgramName !== programName),
+      transfers: data.transfers.filter((transfer) => !isTransferForPointsProgram(transfer, program)),
     });
   }
 
@@ -2523,6 +2564,65 @@ function ProgramsModule({
     if (deleted) {
       await updateData({ ...data, milesPrograms: data.milesPrograms.filter((item) => item.id !== program.id) });
     }
+  }
+
+  async function duplicatePointsProgram(program: PointsProgram) {
+    const relatedTransfer = data.transfers.find((transfer) => isTransferForPointsProgram(transfer, program));
+    const duplicatedProgram: PointsProgram = {
+      ...program,
+      id: crypto.randomUUID(),
+      localId: createLocalId(),
+    };
+    const savedProgram = await createPointsProgram(duplicatedProgram);
+    if (!savedProgram) return;
+
+    const pointsPrograms = [...data.pointsPrograms, savedProgram];
+    let transfers = data.transfers;
+    if (relatedTransfer) {
+      const destination = data.milesPrograms.find((milesProgram) => isTransferForMilesProgram(relatedTransfer, milesProgram));
+      const duplicatedTransfer: BonusTransfer = {
+        ...relatedTransfer,
+        id: crypto.randomUUID(),
+        localId: createLocalId(),
+        pointsProgramId: savedProgram.id,
+        milesProgramId: destination?.id ?? relatedTransfer.milesProgramId,
+      };
+      const savedTransfer = await createTransfer(duplicatedTransfer, pointsPrograms, data.milesPrograms);
+      if (!savedTransfer) return;
+      transfers = [...data.transfers, savedTransfer];
+    }
+
+    await updateData({ ...data, pointsPrograms, transfers });
+  }
+
+  async function duplicateMilesProgram(program: MilesProgram) {
+    const duplicatedProgram: MilesProgram = {
+      ...program,
+      id: crypto.randomUUID(),
+      localId: createLocalId(),
+    };
+    const savedProgram = await createMilesProgram(duplicatedProgram);
+    if (!savedProgram) return;
+    await updateData({ ...data, milesPrograms: [...data.milesPrograms, savedProgram] });
+  }
+
+  async function duplicateTransfer(transfer: BonusTransfer) {
+    const origin = data.pointsPrograms.find((program) => (
+      transfer.pointsProgramId
+        ? transfer.pointsProgramId === program.id || transfer.pointsProgramId === program.localId
+        : program.programName === transfer.originProgramName
+    ));
+    const destination = data.milesPrograms.find((program) => isTransferForMilesProgram(transfer, program));
+    const duplicatedTransfer: BonusTransfer = {
+      ...transfer,
+      id: crypto.randomUUID(),
+      localId: createLocalId(),
+      pointsProgramId: origin?.id ?? transfer.pointsProgramId,
+      milesProgramId: destination?.id ?? transfer.milesProgramId,
+    };
+    const savedTransfer = await createTransfer(duplicatedTransfer, data.pointsPrograms, data.milesPrograms);
+    if (!savedTransfer) return;
+    await updateData({ ...data, transfers: [...data.transfers, savedTransfer] });
   }
 
   const transferDestinationOptions = Array.from(
@@ -2593,7 +2693,7 @@ function ProgramsModule({
         </div>
         <DataTable headers={["TIPO", "PROGRAMA", "SALDO DE PONTOS", "CPM", "PATRIMONIO", "DESTINO", "BONUS", "VALIDADE", ""]}>
           {data.pointsPrograms.map((program) => {
-            const relatedTransfer = data.transfers.find((transfer) => transfer.originProgramName === program.programName);
+            const relatedTransfer = data.transfers.find((transfer) => isTransferForPointsProgram(transfer, program));
             const availableBalance = getBankAvailableBalance(data, program);
             const value = availableBalance * parseCpmInput(program.cpm);
             return (
@@ -2608,10 +2708,11 @@ function ProgramsModule({
                 <Td>{formatDate(program.expirationDate)}</Td>
                 <Td align="right">
                   <div className="flex justify-end gap-1">
+                    <DuplicateButton onClick={() => duplicatePointsProgram(program)} title="Duplicar pontos" />
                     <button onClick={() => editPointsProgram(program)} className="inline-flex h-9 w-9 items-center justify-center rounded text-[#CBD5E1] transition hover:bg-[#233B5D]" title="Editar pontos">
                       <Pencil size={16} />
                     </button>
-                    <DeleteButton onClick={() => deletePointsProgram(program.id, program.programName)} />
+                    <DeleteButton onClick={() => deletePointsProgram(program.id)} />
                   </div>
                 </Td>
               </tr>
@@ -2663,6 +2764,7 @@ function ProgramsModule({
                 <Td>{formatDate(program.expirationDate)}</Td>
                 <Td align="right">
                   <div className="flex justify-end gap-1">
+                    <DuplicateButton onClick={() => duplicateMilesProgram(program)} title="Duplicar milhas" />
                     <button onClick={() => editMilesProgram(program)} className="inline-flex h-9 w-9 items-center justify-center rounded text-[#CBD5E1] transition hover:bg-[#233B5D]" title="Editar milhas">
                       <Pencil size={16} />
                     </button>
@@ -2706,6 +2808,7 @@ function ProgramsModule({
                   <Td>{currency.format(transferPatrimony)}</Td>
                   <Td align="right">
                     <div className="flex justify-end gap-1">
+                      <DuplicateButton onClick={() => duplicateTransfer(transfer)} title="Duplicar transferencia" />
                       <button onClick={() => editTransfer(transfer)} className="inline-flex h-9 w-9 items-center justify-center rounded text-[#CBD5E1] transition hover:bg-[#233B5D]" title="Editar transferencia">
                         <Pencil size={16} />
                       </button>
@@ -2949,6 +3052,17 @@ function RedemptionsModule({
     }
   }
 
+  async function duplicateRedemption(redemption: FlightRedemption) {
+    const duplicatedRedemption: FlightRedemption = {
+      ...redemption,
+      id: crypto.randomUUID(),
+      localId: createLocalId(),
+    };
+    const savedRedemption = await createRedemption(duplicatedRedemption);
+    if (!savedRedemption) return;
+    await updateData({ ...data, redemptions: [...data.redemptions, savedRedemption] });
+  }
+
   return (
     <CrudShell title="Emissoes" description="Registre passagens emitidas e calcule a economia automaticamente." totalLabel="Economia total" totalValue={currency.format(useMetrics(data).totalEconomy)}>
       <div className="grid gap-3 md:grid-cols-9">
@@ -3012,6 +3126,7 @@ function RedemptionsModule({
               <Td>{currency.format(costs.economy)}</Td>
               <Td align="right">
                 <div className="flex justify-end gap-1">
+                  <DuplicateButton onClick={() => duplicateRedemption(redemption)} title="Duplicar emissao" />
                   <button onClick={() => editRedemption(redemption)} className="inline-flex h-9 w-9 items-center justify-center rounded text-[#CBD5E1] transition hover:bg-[#233B5D]" title="Editar emissão">
                     <Pencil size={16} />
                   </button>
@@ -3097,6 +3212,17 @@ function GoalsModule({
     }
   }
 
+  async function duplicateGoal(goal: Goal) {
+    const duplicatedGoal: Goal = {
+      ...goal,
+      id: crypto.randomUUID(),
+      localId: createLocalId(),
+    };
+    const savedGoal = await createGoal(duplicatedGoal);
+    if (!savedGoal) return;
+    await updateData({ ...data, goals: [...data.goals, savedGoal] });
+  }
+
   return (
     <CrudShell title="Metas" description="Planeje viagens e acompanhe as milhas restantes." totalLabel="Milhas atuais" totalValue={formatMiles(totalMiles)}>
       <div className="grid gap-3 md:grid-cols-5">
@@ -3119,7 +3245,10 @@ function GoalsModule({
                   <p className={"text-sm " + mutedTextClass}>{goal.destination}</p>
                   <p className={"mt-1 text-xs " + supportTextClass}>Data da viagem: {formatDate(goal.deadline)}</p>
                 </div>
-                <DeleteButton onClick={() => removeGoal(goal)} />
+                <div className="flex justify-end gap-1">
+                  <DuplicateButton onClick={() => duplicateGoal(goal)} title="Duplicar meta" />
+                  <DeleteButton onClick={() => removeGoal(goal)} />
+                </div>
               </div>
               <div className="mt-4 h-3 overflow-hidden rounded-full bg-[#233B5D]">
                 <div className="h-full rounded-full bg-[#FF5A00]" style={{ width: `${progress}%` }} />
@@ -3429,6 +3558,14 @@ function DataTable({ headers, children }: { headers: string[]; children: React.R
 
 function Td({ children, align = "left" }: { children: React.ReactNode; align?: "left" | "right" }) {
   return <td className={`px-4 py-3 ${align === "right" ? "text-right" : ""}`}>{children}</td>;
+}
+
+function DuplicateButton({ onClick, title }: { onClick: () => void; title: string }) {
+  return (
+    <button onClick={onClick} className="inline-flex h-9 w-9 items-center justify-center rounded text-[#CBD5E1] transition hover:bg-[#233B5D]" title={title}>
+      <Copy size={16} />
+    </button>
+  );
 }
 
 function DeleteButton({ onClick }: { onClick: () => void }) {
