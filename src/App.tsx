@@ -75,6 +75,12 @@ type Section =
   | "redemptions"
   | "profile";
 
+type ProgramFocusRequest = {
+  kind: "points" | "miles";
+  id: string;
+  requestId: number;
+};
+
 const rmOrange = "#f97316";
 const chartColors = ["#f97316", "#0f766e", "#2563eb", "#7c3aed", "#eab308", "#64748b"];
 const mileValue = 0.025;
@@ -1381,6 +1387,7 @@ export default function App() {
   const [migrationError, setMigrationError] = useState("");
   const [isMigrating, setIsMigrating] = useState(false);
   const [autoMigrationMessage, setAutoMigrationMessage] = useState("");
+  const [programFocusRequest, setProgramFocusRequest] = useState<ProgramFocusRequest | null>(null);
   const isSavingDataRef = useRef(false);
 
   const data = clients.find((client) => client.id === activeClientId) ?? clients[0] ?? initialData;
@@ -1882,7 +1889,16 @@ export default function App() {
               )}
             </div>
           )}
-          {activeSection === "dashboard" && <Dashboard data={data} goTo={setActiveSection} />}
+          {activeSection === "dashboard" && (
+            <Dashboard
+              data={data}
+              goTo={setActiveSection}
+              onOpenProgram={(request) => {
+                setProgramFocusRequest({ ...request, requestId: Date.now() });
+                setActiveSection("programs");
+              }}
+            />
+          )}
           {activeSection === "cards" && <CardsModule data={data} updateData={updateData} createCard={createCard} updateCard={updateCard} deleteCard={deleteCard} />}
           {activeSection === "programs" && (
             <ProgramsModule
@@ -1897,6 +1913,7 @@ export default function App() {
               createTransfer={createTransfer}
               updateTransfer={updateTransfer}
               deleteTransferRecord={deleteTransfer}
+              focusRequest={programFocusRequest}
             />
           )}
           {activeSection === "economies" && <EconomiesModule data={data} />}
@@ -1964,7 +1981,15 @@ function LoginPage({ onLogin }: { onLogin: (email: string, password: string) => 
   );
 }
 
-function Dashboard({ data, goTo }: { data: AppData; goTo: (section: Section) => void }) {
+function Dashboard({
+  data,
+  goTo,
+  onOpenProgram,
+}: {
+  data: AppData;
+  goTo: (section: Section) => void;
+  onOpenProgram: (request: Omit<ProgramFocusRequest, "requestId">) => void;
+}) {
   const metrics = useMetrics(data);
   const monthly = useMonthlyCharts(data);
   const currentGoal = data.goals[0];
@@ -2020,6 +2045,8 @@ function Dashboard({ data, goTo }: { data: AppData; goTo: (section: Section) => 
 
       return {
         id: `points-${program.id}`,
+        programId: program.id,
+        kind: "points" as const,
         name: program.programName,
         type: "Pontos",
         quantity: getBankAvailableBalance(data, program),
@@ -2034,6 +2061,8 @@ function Dashboard({ data, goTo }: { data: AppData; goTo: (section: Section) => 
 
       return {
         id: `miles-${program.id}`,
+        programId: program.id,
+        kind: "miles" as const,
         name: program.airline,
         type: "Milhas",
         quantity: getAirlineBalance(data, program),
@@ -2137,7 +2166,12 @@ function Dashboard({ data, goTo }: { data: AppData; goTo: (section: Section) => 
         ) : (
           <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
             {upcomingExpirations.map((item) => (
-              <article key={item.id} className={`expiration-item expiration-item-${getExpirationTone(item.daysRemaining)}`}>
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => onOpenProgram({ kind: item.kind, id: item.programId })}
+                className={`expiration-item expiration-item-${getExpirationTone(item.daysRemaining)}`}
+              >
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <h3 className="truncate text-base font-semibold text-white">{item.name}</h3>
@@ -2151,7 +2185,7 @@ function Dashboard({ data, goTo }: { data: AppData; goTo: (section: Section) => 
                   <p className="text-sm font-semibold">{getExpirationStatusLabel(item.daysRemaining)}</p>
                   <p className="text-sm text-[#CBD5E1]">{formatDate(item.expirationDate)}</p>
                 </div>
-              </article>
+              </button>
             ))}
           </div>
         )}
@@ -2399,6 +2433,7 @@ function ProgramsModule({
   createTransfer,
   updateTransfer,
   deleteTransferRecord,
+  focusRequest,
 }: {
   data: AppData;
   updateData: (data: AppData) => Promise<boolean>;
@@ -2411,6 +2446,7 @@ function ProgramsModule({
   createTransfer: (transfer: BonusTransfer, pointsPrograms?: PointsProgram[], milesPrograms?: MilesProgram[]) => Promise<BonusTransfer | null>;
   updateTransfer: (transfer: BonusTransfer, pointsPrograms?: PointsProgram[], milesPrograms?: MilesProgram[]) => Promise<BonusTransfer | null>;
   deleteTransferRecord: (transfer: BonusTransfer) => Promise<boolean>;
+  focusRequest: ProgramFocusRequest | null;
 }) {
   const [draftMiles, setDraftMiles] = useState({
     airline: "Smiles",
@@ -2447,6 +2483,12 @@ function ProgramsModule({
     editingPointId: "",
     editingTransferOnly: false,
   });
+  const pointsSectionRef = useRef<HTMLElement | null>(null);
+  const milesSectionRef = useRef<HTMLElement | null>(null);
+  const pointsRowRefs = useRef<Record<string, HTMLTableRowElement | null>>({});
+  const milesRowRefs = useRef<Record<string, HTMLTableRowElement | null>>({});
+  const [highlightedProgram, setHighlightedProgram] = useState<Omit<ProgramFocusRequest, "requestId"> | null>(null);
+  const [programFocusToast, setProgramFocusToast] = useState("");
 
   const currentPointsValue = data.pointsPrograms.reduce((sum, program) => sum + program.balance * parseCpmInput(program.cpm), 0);
   const currentAirlineValue = data.milesPrograms.reduce((sum, program) => {
@@ -2805,6 +2847,44 @@ function ProgramsModule({
     await updateData({ ...data, transfers: [...data.transfers, savedTransfer] });
   }
 
+  useEffect(() => {
+    if (!focusRequest) return;
+
+    const isPoints = focusRequest.kind === "points";
+    const program = isPoints
+      ? data.pointsPrograms.find((item) => item.id === focusRequest.id)
+      : data.milesPrograms.find((item) => item.id === focusRequest.id);
+
+    if (!program) {
+      setProgramFocusToast("Registro não encontrado.");
+      const toastTimer = window.setTimeout(() => setProgramFocusToast(""), 3000);
+      return () => window.clearTimeout(toastTimer);
+    }
+
+    if (isPoints) {
+      editPointsProgram(program as PointsProgram);
+    } else {
+      editMilesProgram(program as MilesProgram);
+    }
+
+    setHighlightedProgram({ kind: focusRequest.kind, id: focusRequest.id });
+    const rowRefs = isPoints ? pointsRowRefs : milesRowRefs;
+    const sectionRef = isPoints ? pointsSectionRef : milesSectionRef;
+
+    window.setTimeout(() => {
+      const target = rowRefs.current[focusRequest.id] ?? sectionRef.current;
+      target?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 80);
+
+    const highlightTimer = window.setTimeout(() => {
+      setHighlightedProgram((current) => (
+        current?.kind === focusRequest.kind && current.id === focusRequest.id ? null : current
+      ));
+    }, 3000);
+
+    return () => window.clearTimeout(highlightTimer);
+  }, [focusRequest, data.pointsPrograms, data.milesPrograms, data.transfers]);
+
   const transferDestinationOptions = Array.from(
     new Set([
       ...airlineProgramOptions,
@@ -2814,6 +2894,11 @@ function ProgramsModule({
 
   return (
     <div className="mx-auto max-w-7xl space-y-6">
+      {programFocusToast && (
+        <div className="program-focus-toast" role="status">
+          {programFocusToast}
+        </div>
+      )}
       <SectionHeader
         eyebrow="Gestao de patrimonio"
         title="Milhas e Pontos"
@@ -2835,7 +2920,7 @@ function ProgramsModule({
         </div>
       </section>
 
-      <section className={panelClass + " flex flex-col gap-4 p-6"}>
+      <section ref={pointsSectionRef} className={panelClass + " flex flex-col gap-4 p-6"}>
         <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
           <div>
             <p className="text-sm font-semibold text-[#3B82F6]">Programas Bancarios</p>
@@ -2877,7 +2962,15 @@ function ProgramsModule({
             const availableBalance = getBankAvailableBalance(data, program);
             const value = availableBalance * parseCpmInput(program.cpm);
             return (
-              <tr key={program.id} className="bg-[#3F5876] text-sm text-white hover:bg-[#4E698A]">
+              <tr
+                key={program.id}
+                ref={(element) => {
+                  pointsRowRefs.current[program.id] = element;
+                }}
+                className={`bg-[#3F5876] text-sm text-white hover:bg-[#4E698A] ${
+                  highlightedProgram?.kind === "points" && highlightedProgram.id === program.id ? "program-row-highlight" : ""
+                }`}
+              >
                 <Td><ProgramBadge color="#3B82F6" label={program.type === "loyalty_points" ? "Fidelidade" : "Banco"} /></Td>
                 <Td>{program.programName}</Td>
                 <Td>{number.format(availableBalance)}</Td>
@@ -2901,7 +2994,7 @@ function ProgramsModule({
         </DataTable>
       </section>
 
-      <section className={panelClass + " flex flex-col gap-4 p-6"}>
+      <section ref={milesSectionRef} className={panelClass + " flex flex-col gap-4 p-6"}>
         <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
           <div>
             <p className="text-sm font-semibold text-[#FF5A00]">Companhias Aereas</p>
@@ -2936,7 +3029,15 @@ function ProgramsModule({
             const totalBalance = getAirlineBalance(data, program);
             const patrimonyValue = totalBalance * parseCpmInput(program.cpm);
             return (
-              <tr key={program.id} className="bg-[#3F5876] text-sm text-white hover:bg-[#4E698A]">
+              <tr
+                key={program.id}
+                ref={(element) => {
+                  milesRowRefs.current[program.id] = element;
+                }}
+                className={`bg-[#3F5876] text-sm text-white hover:bg-[#4E698A] ${
+                  highlightedProgram?.kind === "miles" && highlightedProgram.id === program.id ? "program-row-highlight" : ""
+                }`}
+              >
                 <Td><ProgramBadge color={accent} label={program.airline} /></Td>
                 <Td>{number.format(totalBalance)}</Td>
                 <Td>{formatCpm(program.cpm)}</Td>

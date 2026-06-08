@@ -45,6 +45,19 @@ button {
   border: 1px solid #1e3a5f;
   background: #233b5d;
   padding: 1rem;
+  text-align: left;
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    transform 160ms ease;
+}
+
+.expiration-item:hover,
+.expiration-item:focus-visible {
+  border-color: #f97316;
+  box-shadow: 0 0 0 1px rgba(249, 115, 22, 0.45);
+  transform: translateY(-1px);
+  outline: none;
 }
 
 .expiration-item-danger {
@@ -75,6 +88,57 @@ button {
 .expiration-item-attention p:last-child,
 .expiration-item-attention div:last-child p:first-child {
   color: #fef08a;
+}
+
+.program-row-highlight {
+  animation: program-row-pulse 1s ease-in-out 3;
+  outline: 2px solid #f97316;
+  outline-offset: -2px;
+  position: relative;
+}
+
+.program-row-highlight td {
+  box-shadow: inset 0 1px 0 #f97316, inset 0 -1px 0 #f97316;
+}
+
+.program-row-highlight td:first-child {
+  box-shadow:
+    inset 2px 0 0 #f97316,
+    inset 0 1px 0 #f97316,
+    inset 0 -1px 0 #f97316;
+}
+
+.program-row-highlight td:last-child {
+  box-shadow:
+    inset -2px 0 0 #f97316,
+    inset 0 1px 0 #f97316,
+    inset 0 -1px 0 #f97316;
+}
+
+.program-focus-toast {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  z-index: 60;
+  border: 1px solid rgba(249, 115, 22, 0.75);
+  border-radius: 0.5rem;
+  background: #0f1f38;
+  color: #fff;
+  box-shadow: 0 18px 45px rgba(0, 0, 0, 0.35);
+  padding: 0.875rem 1rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+@keyframes program-row-pulse {
+  0%,
+  100% {
+    background-color: #3f5876;
+  }
+
+  50% {
+    background-color: rgba(249, 115, 22, 0.32);
+  }
 }
 
 ::-webkit-scrollbar {
