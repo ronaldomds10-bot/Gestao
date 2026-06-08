@@ -15,6 +15,7 @@ import {
 } from "recharts";
 import {
   BadgeDollarSign,
+  CalendarClock,
   Copy,
   CreditCard,
   Flag,
@@ -336,6 +337,7 @@ const navItems: { id: Section; label: string; icon: React.ElementType }[] = [
 const currency = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" });
 const number = new Intl.NumberFormat("pt-BR", { maximumFractionDigits: 0 });
 const cpmNumber = new Intl.NumberFormat("pt-BR", { minimumFractionDigits: 3, maximumFractionDigits: 3 });
+const dayInMs = 24 * 60 * 60 * 1000;
 
 function formatMiles(value: number) {
   return Number(normalizeSavedMiles(value) || 0).toLocaleString("pt-BR", {
@@ -359,6 +361,29 @@ function parseCpmInput(value: string | number) {
 
 function formatCpm(value: string | number) {
   return `R$ ${cpmNumber.format(parseCpmInput(value))}`;
+}
+
+function parseLocalDate(value: string) {
+  if (!value) return null;
+  const parsed = new Date(`${value}T00:00:00`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function getStartOfToday() {
+  const today = new Date();
+  return new Date(today.getFullYear(), today.getMonth(), today.getDate());
+}
+
+function getExpirationStatusLabel(daysRemaining: number) {
+  if (daysRemaining < 0) return `Vencido há ${Math.abs(daysRemaining)} ${Math.abs(daysRemaining) === 1 ? "dia" : "dias"}`;
+  if (daysRemaining === 0) return "Vence hoje";
+  return `Vence em ${daysRemaining} ${daysRemaining === 1 ? "dia" : "dias"}`;
+}
+
+function getExpirationTone(daysRemaining: number) {
+  if (daysRemaining <= 7) return "danger";
+  if (daysRemaining <= 30) return "warning";
+  return "attention";
 }
 
 function normalizeSavedMiles(value: string | number) {
@@ -1987,6 +2012,42 @@ function Dashboard({ data, goTo }: { data: AppData; goTo: (section: Section) => 
     }),
   ];
   const hasPointsAndMilesDistribution = pointsAndMilesDistribution.some((program) => program.balance > 0);
+  const upcomingExpirations = useMemo(() => {
+    const today = getStartOfToday();
+    const pointsExpirations = data.pointsPrograms.map((program) => {
+      const expirationDate = parseLocalDate(program.expirationDate);
+      if (!expirationDate) return null;
+
+      return {
+        id: `points-${program.id}`,
+        name: program.programName,
+        type: "Pontos",
+        quantity: getBankAvailableBalance(data, program),
+        unit: "pontos",
+        expirationDate: program.expirationDate,
+        daysRemaining: Math.round((expirationDate.getTime() - today.getTime()) / dayInMs),
+      };
+    });
+    const milesExpirations = data.milesPrograms.map((program) => {
+      const expirationDate = parseLocalDate(program.expirationDate);
+      if (!expirationDate) return null;
+
+      return {
+        id: `miles-${program.id}`,
+        name: program.airline,
+        type: "Milhas",
+        quantity: getAirlineBalance(data, program),
+        unit: "milhas",
+        expirationDate: program.expirationDate,
+        daysRemaining: Math.round((expirationDate.getTime() - today.getTime()) / dayInMs),
+      };
+    });
+
+    return [...pointsExpirations, ...milesExpirations]
+      .filter((item): item is Exclude<typeof item, null> => item !== null)
+      .filter((item) => item.daysRemaining <= 90)
+      .sort((a, b) => a.daysRemaining - b.daysRemaining);
+  }, [data]);
 
   return (
     <div className="mx-auto max-w-7xl">
@@ -2050,6 +2111,50 @@ function Dashboard({ data, goTo }: { data: AppData; goTo: (section: Section) => 
             <p className="mt-3 text-sm font-semibold text-[#CBD5E1]">{goalProgress}% concluido</p>
           </div>
         </button>
+      </section>
+
+      <section className="expiration-card rounded-lg border border-[#1E3A5F] bg-[#0F1F38] p-5 text-white shadow">
+        <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-start">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <h2 className="text-lg font-semibold">⚠️ Vencimentos Próximos</h2>
+            </div>
+            <p className={"mt-1 text-sm " + mutedTextClass}>Programas de pontos e milhas com validade em até 90 dias.</p>
+          </div>
+          <button
+            disabled
+            type="button"
+            className="inline-flex min-h-11 items-center justify-center gap-2 rounded border border-[#3B5B82] bg-[#233B5D]/60 px-4 text-sm font-semibold text-[#94A3B8] opacity-70"
+          >
+            <CalendarClock size={16} />
+            <span>Sincronizar Google Agenda</span>
+            <span className="rounded-full bg-[#0F1F38] px-2 py-0.5 text-[10px] uppercase tracking-wide text-[#CBD5E1]">Em breve</span>
+          </button>
+        </div>
+
+        {upcomingExpirations.length === 0 ? (
+          <p className={"mt-5 rounded-lg border border-[#1E3A5F] bg-[#233B5D] p-4 text-sm " + mutedTextClass}>Nenhum vencimento próximo</p>
+        ) : (
+          <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {upcomingExpirations.map((item) => (
+              <article key={item.id} className={`expiration-item expiration-item-${getExpirationTone(item.daysRemaining)}`}>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <h3 className="truncate text-base font-semibold text-white">{item.name}</h3>
+                    <p className="mt-1 text-sm text-[#CBD5E1]">
+                      {number.format(item.quantity)} {item.unit}
+                    </p>
+                  </div>
+                  <span className="shrink-0 rounded-full bg-[#0F1F38] px-2.5 py-1 text-[10px] font-semibold uppercase text-[#CBD5E1]">{item.type}</span>
+                </div>
+                <div className="mt-4 flex items-end justify-between gap-3">
+                  <p className="text-sm font-semibold">{getExpirationStatusLabel(item.daysRemaining)}</p>
+                  <p className="text-sm text-[#CBD5E1]">{formatDate(item.expirationDate)}</p>
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
       </section>
 
       <section className="grid gap-6 xl:grid-cols-[1.1fr_0.9fr]">

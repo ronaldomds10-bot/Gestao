@@ -35,6 +35,48 @@ button {
   touch-action: manipulation;
 }
 
+.expiration-card {
+  margin-top: 1rem;
+}
+
+.expiration-item {
+  min-width: 0;
+  border-radius: 0.5rem;
+  border: 1px solid #1e3a5f;
+  background: #233b5d;
+  padding: 1rem;
+}
+
+.expiration-item-danger {
+  border-color: rgba(239, 68, 68, 0.75);
+  background: linear-gradient(135deg, rgba(127, 29, 29, 0.58), #233b5d 72%);
+}
+
+.expiration-item-danger p:last-child,
+.expiration-item-danger div:last-child p:first-child {
+  color: #fecaca;
+}
+
+.expiration-item-warning {
+  border-color: rgba(249, 115, 22, 0.78);
+  background: linear-gradient(135deg, rgba(154, 52, 18, 0.52), #233b5d 72%);
+}
+
+.expiration-item-warning p:last-child,
+.expiration-item-warning div:last-child p:first-child {
+  color: #fed7aa;
+}
+
+.expiration-item-attention {
+  border-color: rgba(234, 179, 8, 0.72);
+  background: linear-gradient(135deg, rgba(113, 63, 18, 0.46), #233b5d 72%);
+}
+
+.expiration-item-attention p:last-child,
+.expiration-item-attention div:last-child p:first-child {
+  color: #fef08a;
+}
+
 ::-webkit-scrollbar {
   width: 10px;
   height: 10px;
