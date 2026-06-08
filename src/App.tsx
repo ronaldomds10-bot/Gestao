@@ -1393,6 +1393,12 @@ export default function App() {
   const data = clients.find((client) => client.id === activeClientId) ?? clients[0] ?? initialData;
   const isAdmin = Boolean(session?.user.email && adminEmails.has(session.user.email));
 
+  useEffect(() => {
+    if (activeSection !== "programs" && programFocusRequest) {
+      setProgramFocusRequest(null);
+    }
+  }, [activeSection, programFocusRequest]);
+
   function setLoadedClients(loadedClients: AppData[]) {
     const uniqueClients = uniqueClientsForDisplay(loadedClients);
     setClients(uniqueClients);
