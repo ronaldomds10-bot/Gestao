@@ -33,6 +33,7 @@ type ProgramRow = {
   airline?: string | null;
   balance: number | null;
   expiration_date: string | null;
+  calendar_sync_enabled?: boolean | null;
   google_event_id: string | null;
 };
 
@@ -41,6 +42,25 @@ type CalendarSyncError = {
   programId: string;
   code?: string | number;
   message?: string;
+};
+
+type SkipReason =
+  | "no_expiration_date"
+  | "sync_disabled"
+  | "missing_calendar_id"
+  | "google_event_exists"
+  | "invalid_date"
+  | "google_upsert_failed"
+  | "metadata_update_failed"
+  | "unknown_error";
+
+type SkippedByReason = Record<SkipReason, number>;
+
+type SyncItemSummary = {
+  type: "points" | "miles";
+  program: string;
+  action: "updated" | "created" | "recreated" | "skipped";
+  googleEventIdPresent: boolean;
 };
 
 const calendarScope = process.env.GOOGLE_CALENDAR_SCOPES || "https://www.googleapis.com/auth/calendar.events";
@@ -289,6 +309,8 @@ export async function revokeConnection(connection: GoogleConnection) {
 export async function syncCalendarEvents(userId: string, clientId: string | undefined, connection: GoogleConnection) {
   const refreshed = await refreshAccessToken(connection);
   await updateConnectionAccessToken(connection, refreshed.access_token, refreshed.expires_in);
+  const skippedByReason = createSkippedByReason();
+  const items: SyncItemSummary[] = [];
 
   const supabase = getSupabaseAdmin();
   const [pointsResult, milesResult, clientsResult] = await Promise.all([
@@ -313,26 +335,73 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
   }
 
   const client = clientsResult.data as { name?: string | null; email?: string | null } | null;
-  const expirations = [
-    ...(pointsResult.data ?? []).map((program: ProgramRow) => ({ kind: "Pontos" as const, table: "points_programs" as const, program })),
-    ...(milesResult.data ?? []).map((program: ProgramRow) => ({ kind: "Milhas" as const, table: "miles_programs" as const, program })),
-  ]
-    .filter(({ program }) => Boolean(program.expiration_date))
-    .filter(({ program }) => getDaysRemaining(program.expiration_date as string) <= 730)
-    .sort((a, b) => getDaysRemaining(a.program.expiration_date as string) - getDaysRemaining(b.program.expiration_date as string));
+  const candidates = [
+    ...(pointsResult.data ?? []).map((program: ProgramRow) => ({ type: "points" as const, kind: "Pontos" as const, table: "points_programs" as const, program })),
+    ...(milesResult.data ?? []).map((program: ProgramRow) => ({ type: "miles" as const, kind: "Milhas" as const, table: "miles_programs" as const, program })),
+  ];
+  const expirations: typeof candidates = [];
+
+  for (const item of candidates) {
+    const programName = getProgramName(item.program);
+    const skipReason = getEligibilitySkipReason(item.program, connection.calendar_id);
+
+    console.log("[google-sync] eligible item check", {
+      type: item.type,
+      program: programName,
+      expiration_date: item.program.expiration_date,
+      calendar_sync_enabled: item.program.calendar_sync_enabled,
+      google_event_id: item.program.google_event_id,
+      skipReason,
+    });
+
+    if (skipReason) {
+      skippedByReason[skipReason] += 1;
+      items.push(getSyncItemSummary(item, "skipped"));
+      continue;
+    }
+
+    if (getDaysRemaining(item.program.expiration_date as string) <= 730) {
+      expirations.push(item);
+    }
+  }
+
+  expirations.sort((a, b) => getDaysRemaining(a.program.expiration_date as string) - getDaysRemaining(b.program.expiration_date as string));
 
   console.log("[google-sync] vencimentos encontrados", { quantidade: expirations.length });
   console.log("[google-sync] eligible count", { count: expirations.length });
 
   let createdCount = 0;
   let updatedCount = 0;
+  let recreatedCount = 0;
+  let googleEventExistsCount = 0;
   const errors: CalendarSyncError[] = [];
 
   for (const item of expirations) {
     try {
       const event = buildCalendarEvent(item.kind, item.program, client);
       const eventId = item.program.google_event_id || deterministicEventId(userId, item.table, item.program.id, item.program.expiration_date || "");
-      const result = await upsertGoogleEvent(refreshed.access_token, connection.calendar_id, eventId, event, Boolean(item.program.google_event_id));
+      if (item.program.google_event_id) {
+        googleEventExistsCount += 1;
+      }
+      console.log("[google-sync] upsert event start", {
+        type: item.type,
+        program: getProgramName(item.program),
+        expiration_date: item.program.expiration_date,
+        calendar_sync_enabled: item.program.calendar_sync_enabled,
+        google_event_id: item.program.google_event_id,
+        eventId,
+        action: item.program.google_event_id ? "update" : "create",
+        creationSkipReason: item.program.google_event_id ? "google_event_exists" : null,
+        skipReason: null,
+      });
+      const result = await upsertGoogleEvent(
+        refreshed.access_token,
+        connection.calendar_id,
+        eventId,
+        event,
+        Boolean(item.program.google_event_id),
+        () => clearProgramGoogleEventId(supabase, item.table, item.program.id, userId),
+      );
 
       const { error } = await supabase
         .from(item.table)
@@ -346,12 +415,35 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
 
       if (error) {
         logGoogleSyncSupabaseError("update_program_google_event_id", error);
+        skippedByReason.metadata_update_failed += 1;
+        items.push(getSyncItemSummary(item, "skipped"));
+        console.log("[google-sync] eligible item skipped", {
+          type: item.type,
+          program: getProgramName(item.program),
+          expiration_date: item.program.expiration_date,
+          calendar_sync_enabled: item.program.calendar_sync_enabled,
+          google_event_id: item.program.google_event_id,
+          skipReason: "metadata_update_failed",
+        });
         errors.push(getCalendarSyncError(item.table, item.program.id, error));
         continue;
       }
       if (result.action === "created") createdCount += 1;
       if (result.action === "updated") updatedCount += 1;
+      if (result.action === "recreated") recreatedCount += 1;
+      items.push(getSyncItemSummary(item, result.action));
     } catch (error) {
+      skippedByReason.google_upsert_failed += 1;
+      items.push(getSyncItemSummary(item, "skipped"));
+      console.log("[google-sync] eligible item skipped", {
+        type: item.type,
+        program: getProgramName(item.program),
+        expiration_date: item.program.expiration_date,
+        calendar_sync_enabled: item.program.calendar_sync_enabled,
+        google_event_id: item.program.google_event_id,
+        skipReason: "google_upsert_failed",
+        error: getSafeErrorDetails(error),
+      });
       errors.push(getCalendarSyncError(item.table, item.program.id, error));
     }
   }
@@ -361,7 +453,11 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
     eligibleCount: expirations.length,
     createdCount,
     updatedCount,
-    skippedCount: errors.length,
+    googleEventExistsCount,
+    recreatedCount,
+    skippedCount: getSkippedCount(skippedByReason),
+    skippedByReason,
+    items,
     errors,
   };
 
@@ -370,7 +466,10 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
     eligibleCount: result.eligibleCount,
     createdCount: result.createdCount,
     updatedCount: result.updatedCount,
+    googleEventExistsCount: result.googleEventExistsCount,
+    recreatedCount: result.recreatedCount,
     skippedCount: result.skippedCount,
+    skippedByReason: result.skippedByReason,
   });
 
   return result;
@@ -379,8 +478,8 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
 function selectPrograms(table: "points_programs" | "miles_programs", userId: string, clientId?: string) {
   const supabase = getSupabaseAdmin();
   const columns = table === "points_programs"
-    ? "id,user_id,client_id,program_name,balance,expiration_date,google_event_id"
-    : "id,user_id,client_id,airline,balance,expiration_date,google_event_id";
+    ? "id,user_id,client_id,program_name,balance,expiration_date,calendar_sync_enabled,google_event_id"
+    : "id,user_id,client_id,airline,balance,expiration_date,calendar_sync_enabled,google_event_id";
   let query = supabase
     .from(table)
     .select(columns)
@@ -393,8 +492,85 @@ function selectPrograms(table: "points_programs" | "miles_programs", userId: str
   return query;
 }
 
+function createSkippedByReason(): SkippedByReason {
+  return {
+    no_expiration_date: 0,
+    sync_disabled: 0,
+    missing_calendar_id: 0,
+    google_event_exists: 0,
+    invalid_date: 0,
+    google_upsert_failed: 0,
+    metadata_update_failed: 0,
+    unknown_error: 0,
+  };
+}
+
+function getSkippedCount(skippedByReason: SkippedByReason) {
+  return Object.values(skippedByReason).reduce((sum, count) => sum + count, 0);
+}
+
+function getSyncItemSummary(
+  item: { type: "points" | "miles"; program: ProgramRow },
+  action: SyncItemSummary["action"],
+): SyncItemSummary {
+  return {
+    type: item.type,
+    program: getProgramName(item.program),
+    action,
+    googleEventIdPresent: Boolean(item.program.google_event_id),
+  };
+}
+
+function getEligibilitySkipReason(program: ProgramRow, calendarId: string | null | undefined): SkipReason | null {
+  if (!program.expiration_date) return "no_expiration_date";
+  if (!isValidLocalDate(program.expiration_date)) return "invalid_date";
+  if (program.calendar_sync_enabled === false) return "sync_disabled";
+  if (!calendarId) return "missing_calendar_id";
+  return null;
+}
+
+function getProgramName(program: ProgramRow) {
+  return program.program_name || program.airline || program.name || "Programa";
+}
+
+async function clearProgramGoogleEventId(
+  supabase: ReturnType<typeof getSupabaseAdmin>,
+  table: "points_programs" | "miles_programs",
+  programId: string,
+  userId: string,
+) {
+  const { error } = await supabase
+    .from(table)
+    .update({
+      google_event_id: null,
+      calendar_synced_at: null,
+    })
+    .eq("id", programId)
+    .eq("user_id", userId);
+
+  if (error) {
+    logGoogleSyncSupabaseError("clear_missing_google_event_id", error);
+    throw new ApiError(500, "NÃ£o foi possÃ­vel limpar evento inexistente do Google Agenda.", error);
+  }
+}
+
+function isValidLocalDate(date: string) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+  if (!match) return false;
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const parsed = new Date(`${date}T00:00:00`);
+
+  return !Number.isNaN(parsed.getTime())
+    && parsed.getFullYear() === year
+    && parsed.getMonth() === month - 1
+    && parsed.getDate() === day;
+}
+
 function buildCalendarEvent(kind: "Pontos" | "Milhas", program: ProgramRow, client: { name?: string | null; email?: string | null } | null) {
-  const programName = program.program_name || program.airline || program.name || "Programa";
+  const programName = getProgramName(program);
   const expirationDate = program.expiration_date || "";
   const eventDate = addDays(expirationDate, -30);
   const eventEndDate = addDays(eventDate, 1);
@@ -421,13 +597,26 @@ async function upsertGoogleEvent(
   eventId: string,
   event: unknown,
   preferUpdate: boolean,
-): Promise<{ eventId: string; action: "created" | "updated" }> {
+  clearStoredEventId: () => Promise<void>,
+): Promise<{ eventId: string; action: "created" | "updated" | "recreated" }> {
   if (preferUpdate) {
     const updateResponse = await callGoogleCalendar("PUT", calendarId, eventId, accessToken, event);
     if (updateResponse.ok) return { eventId, action: "updated" as const };
-    if (updateResponse.status !== 404) return await throwGoogleError(updateResponse);
+
+    if (updateResponse.status === 404) {
+      await clearStoredEventId();
+      const recreatedEventId = createReplacementEventId(eventId);
+      const recreated = await insertGoogleEvent(accessToken, calendarId, recreatedEventId, event);
+      return { eventId: recreated.eventId, action: "recreated" as const };
+    }
+
+    return await throwGoogleError(updateResponse);
   }
 
+  return await insertGoogleEvent(accessToken, calendarId, eventId, event);
+}
+
+async function insertGoogleEvent(accessToken: string, calendarId: string, eventId: string, event: unknown): Promise<{ eventId: string; action: "created" | "updated" }> {
   const insertResponse = await fetch(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`, {
     method: "POST",
     headers: {
@@ -533,6 +722,10 @@ function safeEqual(left: string, right: string) {
 
 function deterministicEventId(userId: string, table: string, programId: string, expirationDate: string) {
   return `rm${createHash("sha256").update(`${userId}:${table}:${programId}:${expirationDate}`).digest("hex").slice(0, 32)}`;
+}
+
+function createReplacementEventId(previousEventId: string) {
+  return `rm${createHash("sha256").update(`${previousEventId}:${Date.now()}`).digest("hex").slice(0, 32)}`;
 }
 
 function addDays(date: string, days: number) {
