@@ -343,9 +343,12 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
 
 function selectPrograms(table: "points_programs" | "miles_programs", userId: string, clientId?: string) {
   const supabase = getSupabaseAdmin();
+  const columns = table === "points_programs"
+    ? "id,user_id,client_id,program_name,balance,expiration_date,google_event_id"
+    : "id,user_id,client_id,airline,balance,expiration_date,google_event_id";
   let query = supabase
     .from(table)
-    .select("id,user_id,client_id,name,program_name,airline,balance,expiration_date,google_event_id")
+    .select(columns)
     .eq("user_id", userId);
 
   if (clientId) {

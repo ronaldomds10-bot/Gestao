@@ -28,8 +28,10 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     console.log("[google-sync] refresh_token encontrado", { sim: Boolean(connection?.refresh_token_encrypted) });
 
     if (!connection) {
-      res.status(409).json({
+      res.status(401).json({
+        code: "needs_google_connection",
         error: "Google Agenda não conectado.",
+        connectUrl: "/api/google/connect",
         authUrl: createGoogleAuthUrl(req, user.id),
       });
       return;
