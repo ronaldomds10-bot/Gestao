@@ -36,6 +36,13 @@ type ProgramRow = {
   google_event_id: string | null;
 };
 
+type CalendarSyncError = {
+  table: "points_programs" | "miles_programs";
+  programId: string;
+  code?: string | number;
+  message?: string;
+};
+
 const calendarScope = process.env.GOOGLE_CALENDAR_SCOPES || "https://www.googleapis.com/auth/calendar.events";
 const fallbackAppUrl = "https://gestao-lilac.vercel.app";
 const googleSyncEnvNames = [
@@ -78,6 +85,10 @@ export function logGoogleSyncSupabaseError(context: string, error: unknown) {
 
 export function logGoogleSyncGoogleError(context: string, error: unknown) {
   console.error("[google-sync] erro Google Calendar", { context, ...getSafeErrorDetails(error) });
+}
+
+function getCalendarSyncError(table: "points_programs" | "miles_programs", programId: string, error: unknown): CalendarSyncError {
+  return { table, programId, ...getSafeErrorDetails(error) };
 }
 
 export function getRequiredEnv(name: string) {
@@ -303,8 +314,8 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
 
   const client = clientsResult.data as { name?: string | null; email?: string | null } | null;
   const expirations = [
-    ...(pointsResult.data ?? []).map((program: ProgramRow) => ({ kind: "Pontos" as const, table: "points_programs", program })),
-    ...(milesResult.data ?? []).map((program: ProgramRow) => ({ kind: "Milhas" as const, table: "miles_programs", program })),
+    ...(pointsResult.data ?? []).map((program: ProgramRow) => ({ kind: "Pontos" as const, table: "points_programs" as const, program })),
+    ...(milesResult.data ?? []).map((program: ProgramRow) => ({ kind: "Milhas" as const, table: "miles_programs" as const, program })),
   ]
     .filter(({ program }) => Boolean(program.expiration_date))
     .filter(({ program }) => getDaysRemaining(program.expiration_date as string) <= 730)
@@ -312,33 +323,56 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
 
   console.log("[google-sync] vencimentos encontrados", { quantidade: expirations.length });
 
-  let created = 0;
-  let updated = 0;
+  let createdCount = 0;
+  let updatedCount = 0;
+  const errors: CalendarSyncError[] = [];
 
   for (const item of expirations) {
-    const event = buildCalendarEvent(item.kind, item.program, client);
-    const eventId = item.program.google_event_id || deterministicEventId(userId, item.table, item.program.id, item.program.expiration_date || "");
-    const result = await upsertGoogleEvent(refreshed.access_token, connection.calendar_id, eventId, event, Boolean(item.program.google_event_id));
+    try {
+      const event = buildCalendarEvent(item.kind, item.program, client);
+      const eventId = item.program.google_event_id || deterministicEventId(userId, item.table, item.program.id, item.program.expiration_date || "");
+      const result = await upsertGoogleEvent(refreshed.access_token, connection.calendar_id, eventId, event, Boolean(item.program.google_event_id));
 
-    const { error } = await supabase
-      .from(item.table)
-      .update({
-        google_event_id: result.eventId,
-        calendar_synced_at: new Date().toISOString(),
-        calendar_sync_enabled: true,
-      })
-      .eq("id", item.program.id)
-      .eq("user_id", userId);
+      const { error } = await supabase
+        .from(item.table)
+        .update({
+          google_event_id: result.eventId,
+          calendar_synced_at: new Date().toISOString(),
+          calendar_sync_enabled: true,
+        })
+        .eq("id", item.program.id)
+        .eq("user_id", userId);
 
-    if (error) {
-      logGoogleSyncSupabaseError("update_program_google_event_id", error);
-      throw new ApiError(500, "Não foi possível salvar ID do evento.", error);
+      if (error) {
+        logGoogleSyncSupabaseError("update_program_google_event_id", error);
+        errors.push(getCalendarSyncError(item.table, item.program.id, error));
+        continue;
+      }
+      if (result.action === "created") createdCount += 1;
+      if (result.action === "updated") updatedCount += 1;
+    } catch (error) {
+      errors.push(getCalendarSyncError(item.table, item.program.id, error));
     }
-    if (result.action === "created") created += 1;
-    if (result.action === "updated") updated += 1;
   }
 
-  return { total: expirations.length, created, updated };
+  const result = {
+    connected: true,
+    eligibleCount: expirations.length,
+    createdCount,
+    updatedCount,
+    skippedCount: errors.length,
+    errors,
+  };
+
+  console.log("[google-sync] resultado", {
+    userId,
+    eligibleCount: result.eligibleCount,
+    createdCount: result.createdCount,
+    updatedCount: result.updatedCount,
+    skippedCount: result.skippedCount,
+  });
+
+  return result;
 }
 
 function selectPrograms(table: "points_programs" | "miles_programs", userId: string, clientId?: string) {

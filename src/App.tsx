@@ -2068,7 +2068,7 @@ function Dashboard({
       });
       const payload = await response.json();
 
-      if (response.status === 409 && payload.authUrl) {
+      if ((response.status === 409 || payload.code === "needs_google_connection") && payload.authUrl) {
         window.location.href = payload.authUrl;
         return;
       }
@@ -2077,7 +2077,7 @@ function Dashboard({
         throw new Error(payload.error || "Não foi possível sincronizar Google Agenda.");
       }
 
-      setCalendarSyncStatus(`${payload.total ?? 0} vencimentos sincronizados.`);
+      setCalendarSyncStatus(`Agenda sincronizada: ${payload.createdCount ?? 0} eventos criados, ${payload.updatedCount ?? 0} atualizados.`);
     } catch (error) {
       setCalendarSyncStatus(error instanceof Error ? error.message : "Não foi possível sincronizar Google Agenda.");
     } finally {
