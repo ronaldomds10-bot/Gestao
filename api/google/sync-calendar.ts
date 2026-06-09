@@ -4,7 +4,6 @@ import {
   getAuthenticatedUser,
   getConnection,
   logGoogleSyncEnvPresence,
-  sendError,
   syncCalendarEvents,
   type ApiRequest,
   type ApiResponse,
@@ -16,13 +15,14 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
   console.log("[google-sync] start");
 
   if (req.method !== "POST") {
-    res.status(405).json({ error: "Método não permitido." });
+    res.status(405).json(createSyncErrorBody("Método não permitido."));
     console.log("[google-sync] finished", { status: 405 });
     return;
   }
 
   let userIdReceived = false;
   let statusCode = 200;
+  let connectionFound = false;
 
   try {
     logGoogleSyncEnvPresence();
@@ -32,18 +32,18 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     console.log("[google-sync] user_id recebido", { sim: userIdReceived });
 
     const connection = await getConnection(user.id);
+    connectionFound = Boolean(connection);
     console.log("[google-sync] connection found", { found: Boolean(connection) });
     console.log("[google-sync] conexão Google encontrada", { sim: Boolean(connection) });
     console.log("[google-sync] refresh_token encontrado", { sim: Boolean(connection?.refresh_token_encrypted) });
 
     if (!connection) {
       statusCode = 401;
-      res.status(401).json({
+      res.status(401).json(createSyncErrorBody("Google Agenda não conectado.", {
         code: "needs_google_connection",
-        error: "Google Agenda não conectado.",
         connectUrl: "/api/google/connect",
         authUrl: createGoogleAuthUrl(req, user.id),
-      });
+      }));
       return;
     }
 
@@ -58,10 +58,38 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     statusCode = typeof error === "object" && error !== null && "statusCode" in error && typeof (error as { statusCode?: unknown }).statusCode === "number"
       ? (error as { statusCode: number }).statusCode
       : 500;
-    sendError(res, error);
+    res.status(statusCode).json(createSyncErrorBody(error instanceof Error ? error.message : "Erro inesperado.", {
+      connected: connectionFound,
+      details: error instanceof ApiError ? error.details : undefined,
+    }));
   } finally {
     console.log("[google-sync] finished", { status: statusCode });
   }
+}
+
+function createSyncErrorBody(message: string, extras: Record<string, unknown> = {}) {
+  return {
+    ok: false,
+    connected: false,
+    eligibleCount: 0,
+    createdCount: 0,
+    updatedCount: 0,
+    recreatedCount: 0,
+    googleEventExistsCount: 0,
+    skippedByReason: {
+      no_expiration_date: 0,
+      sync_disabled: 0,
+      missing_calendar_id: 0,
+      google_event_exists: 0,
+      invalid_date: 0,
+      google_upsert_failed: 0,
+      metadata_update_failed: 0,
+      unknown_error: 0,
+    },
+    items: [],
+    error: message,
+    ...extras,
+  };
 }
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number) {

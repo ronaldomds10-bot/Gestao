@@ -2085,6 +2085,15 @@ function Dashboard({
 
       console.log("GOOGLE CALENDAR SYNC RESPONSE", {
         status: response.status,
+        ok: typeof payload === "object" && payload !== null ? payload.ok : undefined,
+        connected: typeof payload === "object" && payload !== null ? payload.connected : undefined,
+        eligibleCount: typeof payload === "object" && payload !== null ? payload.eligibleCount : undefined,
+        createdCount: typeof payload === "object" && payload !== null ? payload.createdCount : undefined,
+        updatedCount: typeof payload === "object" && payload !== null ? payload.updatedCount : undefined,
+        recreatedCount: typeof payload === "object" && payload !== null ? payload.recreatedCount : undefined,
+        googleEventExistsCount: typeof payload === "object" && payload !== null ? payload.googleEventExistsCount : undefined,
+        skippedByReason: typeof payload === "object" && payload !== null ? payload.skippedByReason : undefined,
+        items: typeof payload === "object" && payload !== null ? payload.items : undefined,
         body: payload,
       });
 
@@ -2100,7 +2109,11 @@ function Dashboard({
         throw new Error(message);
       }
 
-      setCalendarSyncStatus(`Agenda sincronizada: ${payload.createdCount ?? 0} eventos criados, ${payload.updatedCount ?? 0} atualizados.`);
+      const createdCount = Number(payload.createdCount ?? 0);
+      const updatedCount = Number(payload.updatedCount ?? 0);
+      const recreatedCount = Number(payload.recreatedCount ?? 0);
+
+      setCalendarSyncStatus(`Google Agenda sincronizado: ${createdCount} criados, ${updatedCount} atualizados, ${recreatedCount} recriados.`);
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") {
         setCalendarSyncStatus("A sincronização demorou mais de 30 segundos. Tente novamente em instantes.");
