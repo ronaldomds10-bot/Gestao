@@ -4,7 +4,7 @@ import {
   sendError,
   type ApiRequest,
   type ApiResponse,
-} from "./_lib";
+} from "./_lib.js";
 
 export default async function handler(req: ApiRequest, res: ApiResponse) {
   if (req.method !== "POST" && req.method !== "GET") {

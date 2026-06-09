@@ -38,6 +38,47 @@ type ProgramRow = {
 
 const calendarScope = process.env.GOOGLE_CALENDAR_SCOPES || "https://www.googleapis.com/auth/calendar.events";
 const fallbackAppUrl = "https://gestao-lilac.vercel.app";
+const googleSyncEnvNames = [
+  "GOOGLE_CLIENT_ID",
+  "GOOGLE_CLIENT_SECRET",
+  "GOOGLE_REDIRECT_URI",
+  "GOOGLE_CALENDAR_SCOPES",
+  "APP_URL",
+  "SUPABASE_SERVICE_ROLE_KEY",
+  "SUPABASE_SERVICE_ROLE_KEYY",
+  "TOKEN_ENCRYPTION_KEY",
+  "GOOGLE_OAUTH_STATE_SECRET",
+] as const;
+
+export function logGoogleSyncEnvPresence() {
+  console.log("[google-sync] envs presentes", Object.fromEntries(
+    googleSyncEnvNames.map((name) => [name, Boolean(process.env[name])]),
+  ));
+}
+
+function getSafeErrorDetails(error: unknown) {
+  if (!error || typeof error !== "object") {
+    return { code: undefined, message: error instanceof Error ? error.message : String(error) };
+  }
+
+  const record = error as Record<string, unknown>;
+  return {
+    code: typeof record.code === "string" || typeof record.code === "number" ? record.code : undefined,
+    message: typeof record.message === "string"
+      ? record.message
+      : error instanceof Error
+        ? error.message
+        : undefined,
+  };
+}
+
+export function logGoogleSyncSupabaseError(context: string, error: unknown) {
+  console.error("[google-sync] erro Supabase", { context, ...getSafeErrorDetails(error) });
+}
+
+export function logGoogleSyncGoogleError(context: string, error: unknown) {
+  console.error("[google-sync] erro Google Calendar", { context, ...getSafeErrorDetails(error) });
+}
 
 export function getRequiredEnv(name: string) {
   const value = process.env[name];
@@ -128,6 +169,7 @@ export async function exchangeCodeForTokens(req: ApiRequest, code: string) {
 
   const payload = await response.json();
   if (!response.ok) {
+    logGoogleSyncGoogleError("exchange_code_for_tokens", payload);
     throw new ApiError(400, "Não foi possível conectar ao Google Agenda.", payload);
   }
 
@@ -153,6 +195,7 @@ export async function refreshAccessToken(connection: GoogleConnection) {
 
   const payload = await response.json();
   if (!response.ok) {
+    logGoogleSyncGoogleError("refresh_access_token", payload);
     throw new ApiError(401, "Conexão com Google Agenda expirada.", payload);
   }
 
@@ -179,7 +222,10 @@ export async function getConnection(userId: string) {
     .eq("user_id", userId)
     .maybeSingle();
 
-  if (error) throw new ApiError(500, "Não foi possível carregar conexão Google.", error);
+  if (error) {
+    logGoogleSyncSupabaseError("get_connection", error);
+    throw new ApiError(500, "Não foi possível carregar conexão Google.", error);
+  }
   return data as GoogleConnection | null;
 }
 
@@ -207,7 +253,10 @@ export async function upsertConnection(userId: string, tokens: { access_token: s
       calendar_id: existing?.calendar_id ?? "primary",
     }, { onConflict: "user_id" });
 
-  if (error) throw new ApiError(500, "Não foi possível salvar conexão Google.", error);
+  if (error) {
+    logGoogleSyncSupabaseError("upsert_connection", error);
+    throw new ApiError(500, "Não foi possível salvar conexão Google.", error);
+  }
 }
 
 export async function updateConnectionAccessToken(connection: GoogleConnection, accessToken: string, expiresIn = 3600) {
@@ -239,9 +288,18 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
       : Promise.resolve({ data: null, error: null }),
   ]);
 
-  if (pointsResult.error) throw new ApiError(500, "Não foi possível carregar pontos.", pointsResult.error);
-  if (milesResult.error) throw new ApiError(500, "Não foi possível carregar milhas.", milesResult.error);
-  if (clientsResult.error) throw new ApiError(500, "Não foi possível carregar cliente.", clientsResult.error);
+  if (pointsResult.error) {
+    logGoogleSyncSupabaseError("select_points_programs", pointsResult.error);
+    throw new ApiError(500, "Não foi possível carregar pontos.", pointsResult.error);
+  }
+  if (milesResult.error) {
+    logGoogleSyncSupabaseError("select_miles_programs", milesResult.error);
+    throw new ApiError(500, "Não foi possível carregar milhas.", milesResult.error);
+  }
+  if (clientsResult.error) {
+    logGoogleSyncSupabaseError("select_client", clientsResult.error);
+    throw new ApiError(500, "Não foi possível carregar cliente.", clientsResult.error);
+  }
 
   const client = clientsResult.data as { name?: string | null; email?: string | null } | null;
   const expirations = [
@@ -251,6 +309,8 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
     .filter(({ program }) => Boolean(program.expiration_date))
     .filter(({ program }) => getDaysRemaining(program.expiration_date as string) <= 730)
     .sort((a, b) => getDaysRemaining(a.program.expiration_date as string) - getDaysRemaining(b.program.expiration_date as string));
+
+  console.log("[google-sync] vencimentos encontrados", { quantidade: expirations.length });
 
   let created = 0;
   let updated = 0;
@@ -270,7 +330,10 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
       .eq("id", item.program.id)
       .eq("user_id", userId);
 
-    if (error) throw new ApiError(500, "Não foi possível salvar ID do evento.", error);
+    if (error) {
+      logGoogleSyncSupabaseError("update_program_google_event_id", error);
+      throw new ApiError(500, "Não foi possível salvar ID do evento.", error);
+    }
     if (result.action === "created") created += 1;
     if (result.action === "updated") updated += 1;
   }
@@ -363,6 +426,7 @@ function callGoogleCalendar(method: "PUT", calendarId: string, eventId: string, 
 
 async function throwGoogleError(response: Response): Promise<never> {
   const payload = await response.json().catch(() => null);
+  logGoogleSyncGoogleError("upsert_event", payload);
   throw new ApiError(response.status, "Não foi possível sincronizar evento no Google Agenda.", payload);
 }
 
