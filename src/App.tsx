@@ -2080,7 +2080,7 @@ function Dashboard({
 
     return [...pointsExpirations, ...milesExpirations]
       .filter((item): item is Exclude<typeof item, null> => item !== null)
-      .filter((item) => item.daysRemaining <= 90)
+      .filter((item) => item.daysRemaining <= 730)
       .sort((a, b) => a.daysRemaining - b.daysRemaining);
   }, [data]);
 
@@ -2154,7 +2154,7 @@ function Dashboard({
             <div className="flex items-center gap-2">
               <h2 className="text-lg font-semibold">⚠️ Vencimentos Próximos</h2>
             </div>
-            <p className={"mt-1 text-sm " + mutedTextClass}>Programas de pontos e milhas com validade em até 90 dias.</p>
+            <p className={"mt-1 text-sm " + mutedTextClass}>Programas de pontos e milhas com validade em até 2 anos.</p>
           </div>
           <button
             disabled
