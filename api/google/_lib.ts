@@ -322,6 +322,7 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
     .sort((a, b) => getDaysRemaining(a.program.expiration_date as string) - getDaysRemaining(b.program.expiration_date as string));
 
   console.log("[google-sync] vencimentos encontrados", { quantidade: expirations.length });
+  console.log("[google-sync] eligible count", { count: expirations.length });
 
   let createdCount = 0;
   let updatedCount = 0;

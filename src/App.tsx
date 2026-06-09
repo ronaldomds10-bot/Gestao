@@ -2054,6 +2054,9 @@ function Dashboard({
       return;
     }
 
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 30000);
+
     setIsCalendarSyncing(true);
     setCalendarSyncStatus("");
 
@@ -2065,8 +2068,25 @@ function Dashboard({
           "Content-Type": "application/json",
         },
         body: JSON.stringify({ clientId: data.id }),
+        signal: controller.signal,
       });
-      const payload = await response.json();
+      const responseText = await response.text();
+      let payload: any = responseText;
+
+      if (responseText) {
+        try {
+          payload = JSON.parse(responseText);
+        } catch {
+          payload = responseText;
+        }
+      } else {
+        payload = {};
+      }
+
+      console.log("GOOGLE CALENDAR SYNC RESPONSE", {
+        status: response.status,
+        body: payload,
+      });
 
       if ((response.status === 409 || payload.code === "needs_google_connection") && payload.authUrl) {
         window.location.href = payload.authUrl;
@@ -2074,13 +2094,21 @@ function Dashboard({
       }
 
       if (!response.ok) {
-        throw new Error(payload.error || "Não foi possível sincronizar Google Agenda.");
+        const message = typeof payload === "string"
+          ? payload
+          : payload.error || payload.message || payload.details?.message || "Não foi possível sincronizar Google Agenda.";
+        throw new Error(message);
       }
 
       setCalendarSyncStatus(`Agenda sincronizada: ${payload.createdCount ?? 0} eventos criados, ${payload.updatedCount ?? 0} atualizados.`);
     } catch (error) {
-      setCalendarSyncStatus(error instanceof Error ? error.message : "Não foi possível sincronizar Google Agenda.");
+      if (error instanceof DOMException && error.name === "AbortError") {
+        setCalendarSyncStatus("A sincronização demorou mais de 30 segundos. Tente novamente em instantes.");
+      } else {
+        setCalendarSyncStatus(error instanceof Error ? error.message : "Não foi possível sincronizar Google Agenda.");
+      }
     } finally {
+      window.clearTimeout(timeoutId);
       setIsCalendarSyncing(false);
     }
   }
