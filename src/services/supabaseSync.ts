@@ -8,6 +8,9 @@ export type MilesProgram = {
   cpm: number;
   bonusPercentage: number;
   expirationDate: string;
+  googleEventId?: string;
+  calendarSyncedAt?: string;
+  calendarSyncEnabled?: boolean;
 };
 
 export type PointsProgram = {
@@ -18,6 +21,9 @@ export type PointsProgram = {
   balance: number;
   cpm: number;
   expirationDate: string;
+  googleEventId?: string;
+  calendarSyncedAt?: string;
+  calendarSyncEnabled?: boolean;
 };
 
 export type BonusTransfer = {
@@ -509,6 +515,9 @@ export async function loadUserDataFromSupabase(userId: string, fallbackClients: 
       balance: Number(row.balance ?? 0),
       cpm: parseCpmInput(row.cpm ?? getNotesNumber(row.notes, "cpm", 0.025)),
       expirationDate: row.expiration_date ?? "",
+      googleEventId: row.google_event_id ?? undefined,
+      calendarSyncedAt: row.calendar_synced_at ?? undefined,
+      calendarSyncEnabled: Boolean(row.calendar_sync_enabled),
     });
   }
 
@@ -526,6 +535,9 @@ export async function loadUserDataFromSupabase(userId: string, fallbackClients: 
       cpm: parseCpmInput(row.cpm ?? getNotesNumber(row.notes, "cpm", 0.04)),
       bonusPercentage: Number(row.bonus_percentage ?? getNotesNumber(row.notes, "bonus", 0)),
       expirationDate: row.expiration_date ?? "",
+      googleEventId: row.google_event_id ?? undefined,
+      calendarSyncedAt: row.calendar_synced_at ?? undefined,
+      calendarSyncEnabled: Boolean(row.calendar_sync_enabled),
     });
   }
 

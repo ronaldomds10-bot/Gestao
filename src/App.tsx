@@ -1898,6 +1898,7 @@ export default function App() {
           {activeSection === "dashboard" && (
             <Dashboard
               data={data}
+              accessToken={session?.access_token ?? ""}
               goTo={setActiveSection}
               onOpenProgram={(request) => {
                 setProgramFocusRequest({ ...request, requestId: Date.now() });
@@ -1989,15 +1990,19 @@ function LoginPage({ onLogin }: { onLogin: (email: string, password: string) => 
 
 function Dashboard({
   data,
+  accessToken,
   goTo,
   onOpenProgram,
 }: {
   data: AppData;
+  accessToken: string;
   goTo: (section: Section) => void;
   onOpenProgram: (request: Omit<ProgramFocusRequest, "requestId">) => void;
 }) {
   const metrics = useMetrics(data);
   const monthly = useMonthlyCharts(data);
+  const [calendarSyncStatus, setCalendarSyncStatus] = useState("");
+  const [isCalendarSyncing, setIsCalendarSyncing] = useState(false);
   const currentGoal = data.goals[0];
   const availableGoalMiles = metrics.milesBase;
   const currentGoalRequiredMiles = currentGoal ? normalizeSavedMiles(currentGoal.requiredMiles) : 0;
@@ -2043,6 +2048,43 @@ function Dashboard({
     }),
   ];
   const hasPointsAndMilesDistribution = pointsAndMilesDistribution.some((program) => program.balance > 0);
+  async function syncGoogleCalendar() {
+    if (!accessToken) {
+      setCalendarSyncStatus("Faça login novamente para sincronizar.");
+      return;
+    }
+
+    setIsCalendarSyncing(true);
+    setCalendarSyncStatus("");
+
+    try {
+      const response = await fetch("/api/google/sync-calendar", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ clientId: data.id }),
+      });
+      const payload = await response.json();
+
+      if (response.status === 409 && payload.authUrl) {
+        window.location.href = payload.authUrl;
+        return;
+      }
+
+      if (!response.ok) {
+        throw new Error(payload.error || "Não foi possível sincronizar Google Agenda.");
+      }
+
+      setCalendarSyncStatus(`${payload.total ?? 0} vencimentos sincronizados.`);
+    } catch (error) {
+      setCalendarSyncStatus(error instanceof Error ? error.message : "Não foi possível sincronizar Google Agenda.");
+    } finally {
+      setIsCalendarSyncing(false);
+    }
+  }
+
   const upcomingExpirations = useMemo(() => {
     const today = getStartOfToday();
     const pointsExpirations = data.pointsPrograms.map((program) => {
@@ -2157,15 +2199,16 @@ function Dashboard({
             <p className={"mt-1 text-sm " + mutedTextClass}>Programas de pontos e milhas com validade em até 2 anos.</p>
           </div>
           <button
-            disabled
             type="button"
-            className="inline-flex min-h-11 items-center justify-center gap-2 rounded border border-[#3B5B82] bg-[#233B5D]/60 px-4 text-sm font-semibold text-[#94A3B8] opacity-70"
+            onClick={syncGoogleCalendar}
+            disabled={isCalendarSyncing}
+            className="inline-flex min-h-11 items-center justify-center gap-2 rounded border border-[#FF5A00]/70 bg-[#FF5A00] px-4 text-sm font-semibold text-white transition hover:bg-[#E65000] disabled:cursor-not-allowed disabled:opacity-70"
           >
             <CalendarClock size={16} />
-            <span>Sincronizar Google Agenda</span>
-            <span className="rounded-full bg-[#0F1F38] px-2 py-0.5 text-[10px] uppercase tracking-wide text-[#CBD5E1]">Em breve</span>
+            <span>{isCalendarSyncing ? "Sincronizando..." : "Sincronizar Google Agenda"}</span>
           </button>
         </div>
+        {calendarSyncStatus && <p className={"mt-3 text-sm " + mutedTextClass}>{calendarSyncStatus}</p>}
 
         {upcomingExpirations.length === 0 ? (
           <p className={"mt-5 rounded-lg border border-[#1E3A5F] bg-[#233B5D] p-4 text-sm " + mutedTextClass}>Nenhum vencimento próximo</p>

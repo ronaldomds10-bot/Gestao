@@ -42,9 +42,20 @@ export type CreditCardRow = {
 export type PointsProgramRow = {
   id: string;
   user_id: string;
+  client_id: string | null;
+  local_id: string | null;
+  external_id: string | null;
   name: string;
+  program_name: string | null;
+  type: string | null;
   balance: number;
+  cpm: number | null;
+  destination_program: string | null;
+  bonus_percentage: number | null;
   expiration_date: string | null;
+  google_event_id: string | null;
+  calendar_synced_at: string | null;
+  calendar_sync_enabled: boolean;
   notes: string | null;
   created_at: string;
   updated_at: string;
@@ -53,11 +64,31 @@ export type PointsProgramRow = {
 export type MilesProgramRow = {
   id: string;
   user_id: string;
+  client_id: string | null;
+  local_id: string | null;
+  external_id: string | null;
   name: string;
   airline: string;
   balance: number;
+  cpm: number | null;
+  bonus_percentage: number | null;
   expiration_date: string | null;
+  google_event_id: string | null;
+  calendar_synced_at: string | null;
+  calendar_sync_enabled: boolean;
   notes: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type GoogleCalendarConnectionRow = {
+  id: string;
+  user_id: string;
+  google_email: string | null;
+  refresh_token_encrypted: string;
+  access_token_encrypted: string | null;
+  access_token_expires_at: string | null;
+  calendar_id: string;
   created_at: string;
   updated_at: string;
 };
@@ -126,6 +157,7 @@ export type Database = {
       credit_cards: TableDefinition<CreditCardRow>;
       points_programs: TableDefinition<PointsProgramRow>;
       miles_programs: TableDefinition<MilesProgramRow>;
+      google_calendar_connections: TableDefinition<GoogleCalendarConnectionRow>;
       bonus_transfers: TableDefinition<BonusTransferRow>;
       flight_redemptions: TableDefinition<FlightRedemptionRow>;
       goals: TableDefinition<GoalRow>;
