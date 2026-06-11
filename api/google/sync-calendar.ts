@@ -15,7 +15,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
   console.log("[google-sync] start");
 
   if (req.method !== "POST") {
-    res.status(405).json(createSyncErrorBody("MÈtodo n„o permitido."));
+    res.status(405).json(createSyncErrorBody("M√©todo n√£o permitido."));
     console.log("[google-sync] finished", { status: 405 });
     return;
   }
@@ -35,16 +35,16 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     const connection = await getConnection(user.id);
     connectionFound = Boolean(connection);
     console.log("[google-sync] connection found", { found: Boolean(connection) });
-    console.log("[google-sync] conex„o Google encontrada", { sim: Boolean(connection) });
+    console.log("[google-sync] conex√£o Google encontrada", { sim: Boolean(connection) });
     console.log("[google-sync] refresh_token encontrado", { sim: Boolean(connection?.refresh_token_encrypted) });
     console.log("GOOGLE SYNC HAS GOOGLE TOKENS", Boolean(connection?.refresh_token_encrypted || connection?.access_token_encrypted));
 
     if (!connection) {
       statusCode = 401;
-      res.status(401).json(createSyncErrorBody("Google Agenda n„o conectado.", {
+      res.status(401).json(createSyncErrorBody("Google Agenda n√£o conectado.", {
         connected: false,
         reason: "google_not_connected",
-        message: "Este perfil ainda n„o est· conectado ao Google Agenda.",
+        message: "Este perfil ainda n√£o est√° conectado ao Google Agenda.",
         code: "needs_google_connection",
         connectUrl: "/api/google/connect",
         authUrl: createGoogleAuthUrl(req, user.id),
@@ -52,11 +52,14 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       return;
     }
 
-    const body = typeof req.body === "object" && req.body !== null ? req.body as { clientId?: string } : {};
-    console.log("GOOGLE SYNC SELECTED CLIENT ID", body.clientId ?? null);
-    console.log("CLIENT ID RECEBIDO NO BACKEND", body.clientId ?? null);
+    const body = typeof req.body === "object" && req.body !== null
+      ? req.body as { profileId?: string; clientId?: string; userId?: string }
+      : {};
+    const profileId = body.profileId || body.clientId || body.userId;
+    console.log("GOOGLE SYNC SELECTED CLIENT ID", profileId ?? null);
+    console.log("CLIENT ID RECEBIDO NO BACKEND", profileId ?? null);
 
-    const result = await withTimeout(syncCalendarEvents(user.id, body.clientId, connection), syncTimeoutMs);
+    const result = await withTimeout(syncCalendarEvents(user.id, profileId, connection), syncTimeoutMs);
     res.status(200).json(result);
   } catch (error) {
     if (!userIdReceived) {

@@ -120,6 +120,8 @@ type GoogleCalendarSyncResult = {
   ok: boolean;
   partial: boolean;
   connected: boolean;
+  profileId: string;
+  profileName: string;
   eligibleCount: number;
   createdCount: number;
   updatedCount: number;
@@ -374,7 +376,11 @@ export async function revokeConnection(connection: GoogleConnection) {
   await fetch(`https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(token)}`, { method: "POST" }).catch(() => undefined);
 }
 
-export async function syncCalendarEvents(userId: string, clientId: string | undefined, connection: GoogleConnection) {
+export async function syncCalendarEvents(userId: string, profileId: string | undefined, connection: GoogleConnection) {
+  if (!profileId) {
+    throw new ApiError(400, "Perfil não informado para sincronizar Google Agenda.");
+  }
+
   const refreshed = await refreshAccessToken(connection);
   await updateConnectionAccessToken(connection, refreshed.access_token, refreshed.expires_in);
   const skippedByReason = createSkippedByReason();
@@ -389,7 +395,7 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
     .eq("user_id", userId);
 
   console.log("GOOGLE CALENDAR CALENDAR_ID", calendarId);
-  console.log("GOOGLE SYNC SELECTED CLIENT ID", clientId ?? null);
+  console.log("GOOGLE SYNC SELECTED CLIENT ID", profileId ?? null);
   console.log("GOOGLE SYNC AUTH USER ID", userId);
   console.log("GOOGLE SYNC HAS GOOGLE TOKENS", Boolean(connection.refresh_token_encrypted || connection.access_token_encrypted));
   if (clientsResult.error) {
@@ -397,6 +403,17 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
     throw new ApiError(500, "Não foi possível carregar clientes.", clientsResult.error);
   }
 
+  const selectedClient = (clientsResult.data ?? []).find((row: Record<string, unknown>) =>
+    String(row.id) === profileId || String(row.local_id ?? "") === profileId
+  ) as Record<string, unknown> | undefined;
+  if (!selectedClient) {
+    throw new ApiError(404, "Perfil selecionado não encontrado.");
+  }
+
+  const selectedClientId = String(selectedClient.id);
+  const selectedClientName = typeof selectedClient.name === "string" && selectedClient.name.trim()
+    ? selectedClient.name.trim()
+    : "Perfil selecionado";
   const clientMap = new Map<string, { id: string; localId?: string | null; name?: string | null; email?: string | null }>(
     (clientsResult.data ?? []).map((row: Record<string, unknown>) => [
       String(row.id),
@@ -408,13 +425,14 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
       },
     ]),
   );
-  console.log("GOOGLE SYNC SELECTED CLIENT", { clientId: clientId ?? null });
-  console.log("[google-sync] clientId:", clientId ?? null);
-  console.log("[google-sync] clientName:", "sync-all-profiles");
+  console.log("GOOGLE SYNC SELECTED CLIENT", { clientId: selectedClientId, clientName: selectedClientName });
+  console.log("[google-sync] clientId:", selectedClientId);
+  console.log("[google-sync] clientName:", selectedClientName);
+  console.log("SYNC PROFILE", { profileId: selectedClientId, profileName: selectedClientName });
 
   const [pointsResult, milesResult] = await Promise.all([
-    selectPrograms("points_programs", userId),
-    selectPrograms("miles_programs", userId),
+    selectPrograms("points_programs", userId, selectedClientId),
+    selectPrograms("miles_programs", userId, selectedClientId),
   ]);
 
   if (pointsResult.error) {
@@ -642,6 +660,8 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
     ok,
     partial,
     connected: true,
+    profileId: selectedClientId,
+    profileName: selectedClientName,
     eligibleCount: expirations.length,
     createdCount,
     updatedCount,
@@ -657,6 +677,8 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
     ok: result.ok,
     partial: result.partial,
     userId,
+    profileId: selectedClientId,
+    profileName: selectedClientName,
     eligibleCount: result.eligibleCount,
     createdCount: result.createdCount,
     updatedCount: result.updatedCount,
@@ -675,6 +697,10 @@ function selectPrograms(table: "points_programs" | "miles_programs", userId: str
     .from(table)
     .select("*")
     .eq("user_id", userId);
+
+  if (clientId) {
+    query = query.eq("client_id", clientId);
+  }
 
   return query;
 }

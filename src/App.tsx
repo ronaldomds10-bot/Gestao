@@ -2094,6 +2094,7 @@ function Dashboard({
     console.log("calendarWindow aberto:", !!calendarWindow);
     console.log("PERFIL SELECIONADO PARA SYNC", selectedClientId);
     console.log("sync clientId", selectedClientId);
+    console.log("SYNC PROFILE", { profileId: selectedClientId, profileName: selectedClient.profile.name });
     console.log("[google-sync] selectedClient:", selectedClient);
 
     setIsCalendarSyncing(true);
@@ -2107,7 +2108,7 @@ function Dashboard({
           Authorization: `Bearer ${accessToken}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ clientId: selectedClientId }),
+        body: JSON.stringify({ profileId: selectedClientId, clientId: selectedClientId }),
         signal: controller.signal,
       });
       const responseText = await response.text();
@@ -2199,13 +2200,16 @@ function Dashboard({
       const recreatedCount = Number(payload.recreatedCount ?? 0);
       const googleEventExistsCount = Number(payload.googleEventExistsCount ?? 0);
       const payloadItems = Array.isArray(payload.items) ? payload.items as GoogleCalendarSyncItem[] : [];
+      const syncedProfileName = typeof payload.profileName === "string" && payload.profileName.trim()
+        ? payload.profileName.trim()
+        : selectedClient.profile.name;
       const hasSummaryWithoutClient = payloadItems.some((item) => item.googleSummary && item.clientName && item.clientName !== "Não identificado" && !item.googleSummary.includes(item.clientName));
       const successMessage =
         payload.eligibleCount === 0
           ? "Nenhum vencimento elegível para sincronizar neste perfil."
           : createdCount === 0 && updatedCount === 0 && recreatedCount === 0 && googleEventExistsCount > 0
           ? "Tudo certo! Os vencimentos elegíveis já estavam no Google Agenda."
-          : `Google Agenda sincronizado para todos os perfis: ${createdCount} criados, ${updatedCount} atualizados, ${recreatedCount} recriados.`;
+          : `Google Agenda sincronizado para ${syncedProfileName}: ${createdCount} criados, ${updatedCount} atualizados, ${recreatedCount} recriados.`;
 
       console.log("sync success:", payload);
       setCalendarSyncStatus(
@@ -2626,6 +2630,12 @@ function CardsModule({
   }
 
   function editCard(card: CreditCardRecord) {
+    if (!card.id) {
+      console.error("CARD WITHOUT ID", card);
+      window.alert("Este cartao nao tem identificador para edicao. Recarregue os dados e tente novamente.");
+      return;
+    }
+
     setDraft({
       bank: card.bank,
       cardName: card.cardName,
@@ -2685,7 +2695,12 @@ function CardsModule({
             <Td align="right">
               <div className="flex justify-end gap-1">
                 <DuplicateButton onClick={() => duplicateCard(card)} title="Duplicar cartao" />
-                <button onClick={() => editCard(card)} className="inline-flex h-9 w-9 items-center justify-center rounded text-[#CBD5E1] transition hover:bg-[#233B5D]" title="Editar cartao">
+                <button
+                  onClick={() => editCard(card)}
+                  disabled={!card.id}
+                  className="inline-flex h-9 w-9 items-center justify-center rounded text-[#CBD5E1] transition hover:bg-[#233B5D] disabled:cursor-not-allowed disabled:opacity-40"
+                  title={card.id ? "Editar cartao" : "Cartao sem identificador para edicao"}
+                >
                   <Pencil size={16} />
                 </button>
                 <DeleteButton onClick={() => removeCard(card)} />

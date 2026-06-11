@@ -732,14 +732,66 @@ export async function saveCardToSupabase(userId: string, clientId: string, card:
   return { ...card, localId: recordLocalId, id: await saveByIdOrExternalId("credit_cards", primaryPayload, fallbackPayload, card.id) };
 }
 
+async function resolveCreditCardSupabaseId(userId: string, clientId: string, card: CreditCardRecord, recordLocalId: string) {
+  if (isUuid(card.id)) return card.id;
+
+  const queryBy = async (column: "local_id" | "external_id", value: string | undefined) => {
+    if (!value) return null;
+
+    const { data, error } = await supabase
+      .from("credit_cards")
+      .select("id")
+      .eq("user_id", userId)
+      .eq("client_id", clientId)
+      .eq(column, value)
+      .limit(1)
+      .maybeSingle();
+
+    if (error) {
+      throwSupabaseError(`credit_cards.resolve.${column}`, error, { user_id: userId, client_id: clientId, [column]: value });
+    }
+
+    return typeof data?.id === "string" ? data.id : null;
+  };
+
+  const byLocalId = await queryBy("local_id", recordLocalId);
+  if (byLocalId) return byLocalId;
+
+  const byExternalId = await queryBy("external_id", card.id);
+  if (byExternalId) return byExternalId;
+
+  const { data, error } = await supabase
+    .from("credit_cards")
+    .select("id")
+    .eq("user_id", userId)
+    .eq("client_id", clientId)
+    .eq("bank", card.bank)
+    .eq("card_name", card.cardName)
+    .eq("due_day", card.dueDay)
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    throwSupabaseError("credit_cards.resolve.signature", error, {
+      user_id: userId,
+      client_id: clientId,
+      bank: card.bank,
+      card_name: card.cardName,
+      due_day: card.dueDay,
+    });
+  }
+
+  if (typeof data?.id === "string") return data.id;
+
+  console.error("CARD WITHOUT SUPABASE ID", { userId, clientId, card });
+  throw new SupabaseSyncError("Cartao sem id real do Supabase para atualizar. Recarregue os dados e tente novamente.");
+}
+
 export async function updateCardInSupabase(userId: string, clientId: string, card: CreditCardRecord) {
   ensureOnline();
 
-  if (!isUuid(card.id)) {
-    throw new SupabaseSyncError("Cartao sem id real do Supabase para atualizar.");
-  }
-
   const recordLocalId = localId(card);
+  const resolvedCardId = await resolveCreditCardSupabaseId(userId, clientId, card, recordLocalId);
   const payload = {
     user_id: userId,
     client_id: clientId,
@@ -766,7 +818,7 @@ export async function updateCardInSupabase(userId: string, clientId: string, car
   const { data, error } = await supabase
     .from("credit_cards")
     .update(payload as never)
-    .eq("id", card.id)
+    .eq("id", resolvedCardId)
     .eq("user_id", userId)
     .select("id")
     .single();
@@ -776,10 +828,10 @@ export async function updateCardInSupabase(userId: string, clientId: string, car
       throwSupabaseError("credit_cards.update", error, payload);
     }
 
-    const { data: fallbackData, error: fallbackError } = await supabase
+      const { data: fallbackData, error: fallbackError } = await supabase
       .from("credit_cards")
       .update(fallbackPayload as never)
-      .eq("id", card.id)
+      .eq("id", resolvedCardId)
       .eq("user_id", userId)
       .select("id")
       .single();
