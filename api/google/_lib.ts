@@ -116,12 +116,21 @@ type GoogleCalendarItemResult = {
   error?: string | null;
 };
 
+type GoogleCalendarPayloadPreviewItem = {
+  type: "Pontos" | "Milhas";
+  program: string;
+  expirationDate: string | null;
+  googleDate: string | null;
+  action: "create" | "update";
+};
+
 type GoogleCalendarSyncResult = {
   ok: boolean;
   partial: boolean;
   connected: boolean;
   profileId: string;
   profileName: string;
+  payloadPreview: GoogleCalendarPayloadPreviewItem[];
   eligibleCount: number;
   createdCount: number;
   updatedCount: number;
@@ -376,7 +385,12 @@ export async function revokeConnection(connection: GoogleConnection) {
   await fetch(`https://oauth2.googleapis.com/revoke?token=${encodeURIComponent(token)}`, { method: "POST" }).catch(() => undefined);
 }
 
-export async function syncCalendarEvents(userId: string, profileId: string | undefined, connection: GoogleConnection) {
+export async function syncCalendarEvents(
+  userId: string,
+  profile: { profileId: string; profileName?: string | null },
+  connection: GoogleConnection,
+) {
+  const { profileId } = profile;
   if (!profileId) {
     throw new ApiError(400, "Perfil não informado para sincronizar Google Agenda.");
   }
@@ -411,9 +425,11 @@ export async function syncCalendarEvents(userId: string, profileId: string | und
   }
 
   const selectedClientId = String(selectedClient.id);
-  const selectedClientName = typeof selectedClient.name === "string" && selectedClient.name.trim()
-    ? selectedClient.name.trim()
-    : "Perfil selecionado";
+  const selectedClientName = typeof profile.profileName === "string" && profile.profileName.trim()
+    ? profile.profileName.trim()
+    : typeof selectedClient.name === "string" && selectedClient.name.trim()
+      ? selectedClient.name.trim()
+      : "Perfil selecionado";
   const clientMap = new Map<string, { id: string; localId?: string | null; name?: string | null; email?: string | null }>(
     (clientsResult.data ?? []).map((row: Record<string, unknown>) => [
       String(row.id),
@@ -473,10 +489,18 @@ export async function syncCalendarEvents(userId: string, profileId: string | und
   }
 
   expirations.sort((a, b) => getDaysRemaining(a.program.expiration_date as string) - getDaysRemaining(b.program.expiration_date as string));
+  const payloadPreview: GoogleCalendarPayloadPreviewItem[] = expirations.map((item) => ({
+    type: item.kind,
+    program: getProgramName(item.program),
+    expirationDate: item.program.expiration_date,
+    googleDate: getGoogleEventDate(item.program.expiration_date),
+    action: item.program.google_event_id ? "update" : "create",
+  }));
 
   console.log("[google-sync] vencimentos encontrados", { quantidade: expirations.length });
   console.log("[google-sync] eligible count", { count: expirations.length });
   console.log("GOOGLE SYNC ELIGIBLE COUNT", expirations.length);
+  console.log("GOOGLE SYNC PAYLOAD PREVIEW", { profileId: selectedClientId, profileName: selectedClientName, payloadPreview });
 
   let createdCount = 0;
   let updatedCount = 0;
@@ -527,7 +551,7 @@ export async function syncCalendarEvents(userId: string, profileId: string | und
         eventId,
         event,
         Boolean(item.program.google_event_id),
-        () => clearProgramGoogleEventId(supabase, item.table, item.program.id, userId),
+        () => clearProgramGoogleEventId(supabase, item.table, item.program.id, userId, selectedClientId),
       );
 
       if (result.action === "created") createdCount += 1;
@@ -542,7 +566,8 @@ export async function syncCalendarEvents(userId: string, profileId: string | und
           calendar_sync_enabled: true,
         })
         .eq("id", item.program.id)
-        .eq("user_id", userId);
+        .eq("user_id", userId)
+        .eq("client_id", selectedClientId);
 
       if (error) {
         logGoogleSyncSupabaseError("update_program_google_event_id", error);
@@ -662,6 +687,7 @@ export async function syncCalendarEvents(userId: string, profileId: string | und
     connected: true,
     profileId: selectedClientId,
     profileName: selectedClientName,
+    payloadPreview,
     eligibleCount: expirations.length,
     createdCount,
     updatedCount,
@@ -679,6 +705,7 @@ export async function syncCalendarEvents(userId: string, profileId: string | und
     userId,
     profileId: selectedClientId,
     profileName: selectedClientName,
+    payloadPreview,
     eligibleCount: result.eligibleCount,
     createdCount: result.createdCount,
     updatedCount: result.updatedCount,
@@ -784,6 +811,13 @@ function formatProgramAmount(program: ProgramRow, kind: "Pontos" | "Milhas") {
   return `${formatProgramBalance(program)} ${kind.toLowerCase()}`;
 }
 
+function getGoogleEventDate(expirationDate: string | null | undefined) {
+  if (!expirationDate) return null;
+  const reminderDate = subtractMonths(expirationDate, 3);
+  const today = formatLocalDate(new Date());
+  return compareLocalDates(reminderDate, today) < 0 ? today : reminderDate;
+}
+
 function formatCurrencyBRL(value: number) {
   return new Intl.NumberFormat("pt-BR", {
     style: "currency",
@@ -797,6 +831,7 @@ async function clearProgramGoogleEventId(
   table: "points_programs" | "miles_programs",
   programId: string,
   userId: string,
+  clientId: string,
 ) {
   const { error } = await supabase
     .from(table)
@@ -805,7 +840,8 @@ async function clearProgramGoogleEventId(
       calendar_synced_at: null,
     })
     .eq("id", programId)
-    .eq("user_id", userId);
+    .eq("user_id", userId)
+    .eq("client_id", clientId);
 
   if (error) {
     logGoogleSyncSupabaseError("clear_missing_google_event_id", error);
@@ -836,8 +872,7 @@ function buildCalendarEvent(
   const programName = getProgramName(program);
   const expirationDate = program.expiration_date || "";
   const reminderDate = subtractMonths(expirationDate, 3);
-  const today = formatLocalDate(new Date());
-  const eventDate = compareLocalDates(reminderDate, today) < 0 ? today : reminderDate;
+  const eventDate = getGoogleEventDate(expirationDate) ?? reminderDate;
   const daysRemaining = getDaysRemaining(expirationDate);
   const amount = formatProgramAmount(program, kind);
   const typeLabel = getProgramTypeLabel(kind);
@@ -863,7 +898,7 @@ function buildCalendarEvent(
   ].filter(Boolean);
 
   return {
-    summary: `Aviso: ${clientName} | ${programName} - ${amount} vencem em ${formatPtBrDate(expirationDate)}`,
+    summary: `Vencimento ${kind.toLowerCase()} - ${clientName} - ${programName}`,
     description: descriptionLines.join("\n"),
     start: { date: eventDate },
     end: { date: addDays(eventDate, 1) },

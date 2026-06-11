@@ -2091,10 +2091,13 @@ function Dashboard({
     const timeoutId = window.setTimeout(() => controller.abort(), 30000);
     const calendarWindow = window.open("about:blank", "_blank");
     const selectedClient = data;
+    const profileId = selectedClientId;
+    const profileName = selectedClient.profile.name;
     console.log("calendarWindow aberto:", !!calendarWindow);
     console.log("PERFIL SELECIONADO PARA SYNC", selectedClientId);
     console.log("sync clientId", selectedClientId);
-    console.log("SYNC PROFILE", { profileId: selectedClientId, profileName: selectedClient.profile.name });
+    console.log("SYNC PROFILE", { profileId, profileName });
+    console.log("SYNC REQUEST PROFILE", { profileId, profileName });
     console.log("[google-sync] selectedClient:", selectedClient);
 
     setIsCalendarSyncing(true);
@@ -2108,7 +2111,7 @@ function Dashboard({
           Authorization: `Bearer ${accessToken}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ profileId: selectedClientId, clientId: selectedClientId }),
+        body: JSON.stringify({ profileId, profileName }),
         signal: controller.signal,
       });
       const responseText = await response.text();

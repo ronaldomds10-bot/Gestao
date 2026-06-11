@@ -53,13 +53,21 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     }
 
     const body = typeof req.body === "object" && req.body !== null
-      ? req.body as { profileId?: string; clientId?: string; userId?: string }
+      ? req.body as { profileId?: string; profileName?: string; clientId?: string; userId?: string }
       : {};
-    const profileId = body.profileId || body.clientId || body.userId;
+    const profileId = body.profileId;
+    const profileName = body.profileName;
+    if (!profileId) {
+      statusCode = 400;
+      res.status(400).json({ ok: false, error: "profileId obrigatório" });
+      return;
+    }
+
     console.log("GOOGLE SYNC SELECTED CLIENT ID", profileId ?? null);
+    console.log("SYNC REQUEST PROFILE", { profileId, profileName: profileName ?? null });
     console.log("CLIENT ID RECEBIDO NO BACKEND", profileId ?? null);
 
-    const result = await withTimeout(syncCalendarEvents(user.id, profileId, connection), syncTimeoutMs);
+    const result = await withTimeout(syncCalendarEvents(user.id, { profileId, profileName }, connection), syncTimeoutMs);
     res.status(200).json(result);
   } catch (error) {
     if (!userIdReceived) {
