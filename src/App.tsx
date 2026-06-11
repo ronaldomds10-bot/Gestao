@@ -2091,13 +2091,10 @@ function Dashboard({
     const timeoutId = window.setTimeout(() => controller.abort(), 30000);
     const calendarWindow = window.open("about:blank", "_blank");
     const selectedClient = data;
-    const profileId = selectedClientId;
-    const profileName = selectedClient.profile.name;
     console.log("calendarWindow aberto:", !!calendarWindow);
     console.log("PERFIL SELECIONADO PARA SYNC", selectedClientId);
     console.log("sync clientId", selectedClientId);
-    console.log("SYNC PROFILE", { profileId, profileName });
-    console.log("SYNC REQUEST PROFILE", { profileId, profileName });
+    console.log("SYNC REQUEST ALL PROFILES", { syncAllProfiles: true });
     console.log("[google-sync] selectedClient:", selectedClient);
 
     setIsCalendarSyncing(true);
@@ -2111,7 +2108,7 @@ function Dashboard({
           Authorization: `Bearer ${accessToken}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ profileId, profileName }),
+        body: JSON.stringify({ syncAllProfiles: true }),
         signal: controller.signal,
       });
       const responseText = await response.text();
@@ -2203,16 +2200,13 @@ function Dashboard({
       const recreatedCount = Number(payload.recreatedCount ?? 0);
       const googleEventExistsCount = Number(payload.googleEventExistsCount ?? 0);
       const payloadItems = Array.isArray(payload.items) ? payload.items as GoogleCalendarSyncItem[] : [];
-      const syncedProfileName = typeof payload.profileName === "string" && payload.profileName.trim()
-        ? payload.profileName.trim()
-        : selectedClient.profile.name;
       const hasSummaryWithoutClient = payloadItems.some((item) => item.googleSummary && item.clientName && item.clientName !== "Não identificado" && !item.googleSummary.includes(item.clientName));
       const successMessage =
         payload.eligibleCount === 0
-          ? "Nenhum vencimento elegível para sincronizar neste perfil."
+          ? "Nenhum vencimento elegivel para sincronizar nos clientes."
           : createdCount === 0 && updatedCount === 0 && recreatedCount === 0 && googleEventExistsCount > 0
-          ? "Tudo certo! Os vencimentos elegíveis já estavam no Google Agenda."
-          : `Google Agenda sincronizado para ${syncedProfileName}: ${createdCount} criados, ${updatedCount} atualizados, ${recreatedCount} recriados.`;
+          ? "Tudo certo! Os vencimentos elegiveis ja estavam no Google Agenda."
+          : `Google Agenda sincronizado para todos os clientes: ${createdCount} criados, ${updatedCount} atualizados, ${recreatedCount} recriados.`;
 
       console.log("sync success:", payload);
       setCalendarSyncStatus(

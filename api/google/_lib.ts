@@ -128,9 +128,20 @@ type GoogleCalendarSyncResult = {
   ok: boolean;
   partial: boolean;
   connected: boolean;
+  syncAllProfiles?: boolean;
+  profilesCount?: number;
   profileId: string;
   profileName: string;
   payloadPreview: GoogleCalendarPayloadPreviewItem[];
+  profiles?: Array<{
+    profileId: string;
+    profileName: string;
+    eligibleCount: number;
+    createdCount: number;
+    updatedCount: number;
+    recreatedCount: number;
+    payloadPreview: GoogleCalendarPayloadPreviewItem[];
+  }>;
   eligibleCount: number;
   createdCount: number;
   updatedCount: number;
@@ -387,6 +398,96 @@ export async function revokeConnection(connection: GoogleConnection) {
 
 export async function syncCalendarEvents(
   userId: string,
+  request: { syncAllProfiles?: boolean; profileId?: string; profileName?: string | null },
+  connection: GoogleConnection,
+) {
+  if (request.syncAllProfiles) {
+    return syncAllCalendarProfiles(userId, connection);
+  }
+
+  return syncSingleCalendarProfile(userId, {
+    profileId: request.profileId || "",
+    profileName: request.profileName,
+  }, connection);
+}
+
+async function syncAllCalendarProfiles(userId: string, connection: GoogleConnection): Promise<GoogleCalendarSyncResult> {
+  const supabase = getSupabaseAdmin();
+  const { data, error } = await supabase
+    .from("clients")
+    .select("id,name,email,phone,plan,local_id")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: true });
+
+  if (error) {
+    logGoogleSyncSupabaseError("select_clients_all_profiles", error);
+    throw new ApiError(500, "Nao foi possivel carregar clientes.", error);
+  }
+
+  const clients = data ?? [];
+  const profiles: NonNullable<GoogleCalendarSyncResult["profiles"]> = [];
+  const items: GoogleCalendarItemResult[] = [];
+  const errors: CalendarSyncError[] = [];
+  const skippedByReason = createSkippedByReason();
+  const payloadPreview: GoogleCalendarPayloadPreviewItem[] = [];
+  let eligibleCount = 0;
+  let createdCount = 0;
+  let updatedCount = 0;
+  let recreatedCount = 0;
+  let googleEventExistsCount = 0;
+
+  for (const client of clients as Array<Record<string, unknown>>) {
+    const profileId = String(client.id);
+    const profileName = typeof client.name === "string" && client.name.trim() ? client.name.trim() : "Cliente";
+    const result = await syncSingleCalendarProfile(userId, { profileId, profileName }, connection);
+
+    profiles.push({
+      profileId: result.profileId,
+      profileName: result.profileName,
+      eligibleCount: result.eligibleCount,
+      createdCount: result.createdCount,
+      updatedCount: result.updatedCount,
+      recreatedCount: result.recreatedCount,
+      payloadPreview: result.payloadPreview,
+    });
+
+    eligibleCount += result.eligibleCount;
+    createdCount += result.createdCount;
+    updatedCount += result.updatedCount;
+    recreatedCount += result.recreatedCount;
+    googleEventExistsCount += result.googleEventExistsCount;
+    payloadPreview.push(...result.payloadPreview);
+    items.push(...result.items);
+    errors.push(...result.errors);
+    for (const reason of Object.keys(skippedByReason) as SkipReason[]) {
+      skippedByReason[reason] += result.skippedByReason[reason] ?? 0;
+    }
+  }
+
+  const partial = profiles.length > 0 && errors.length > 0;
+  return {
+    ok: errors.length === 0,
+    partial,
+    connected: true,
+    syncAllProfiles: true,
+    profilesCount: profiles.length,
+    profileId: "all",
+    profileName: "Todos os clientes",
+    payloadPreview,
+    eligibleCount,
+    createdCount,
+    updatedCount,
+    googleEventExistsCount,
+    recreatedCount,
+    skippedCount: getSkippedCount(skippedByReason),
+    skippedByReason,
+    profiles,
+    items,
+    errors,
+  };
+}
+async function syncSingleCalendarProfile(
+  userId: string,
   profile: { profileId: string; profileName?: string | null },
   connection: GoogleConnection,
 ) {
@@ -590,9 +691,7 @@ export async function syncCalendarEvents(
           expiration_date: item.program.expiration_date,
           expirationDate: item.program.expiration_date,
           reminderDate: subtractMonths(item.program.expiration_date || "", 3),
-          eventDate: compareLocalDates(subtractMonths(item.program.expiration_date || "", 3), formatLocalDate(new Date())) < 0
-            ? formatLocalDate(new Date())
-            : subtractMonths(item.program.expiration_date || "", 3),
+          eventDate: getGoogleEventDate(item.program.expiration_date),
           accountName: getAccountName(item.program),
           holderName: getHolderName(item.program),
           maskedCpf: getMaskedCpf(item.program.cpf),
@@ -619,9 +718,7 @@ export async function syncCalendarEvents(
         expiration_date: item.program.expiration_date,
         expirationDate: item.program.expiration_date,
         reminderDate: subtractMonths(item.program.expiration_date || "", 3),
-        eventDate: compareLocalDates(subtractMonths(item.program.expiration_date || "", 3), formatLocalDate(new Date())) < 0
-          ? formatLocalDate(new Date())
-          : subtractMonths(item.program.expiration_date || "", 3),
+        eventDate: getGoogleEventDate(item.program.expiration_date),
         accountName: getAccountName(item.program),
         holderName: getHolderName(item.program),
         maskedCpf: getMaskedCpf(item.program.cpf),
@@ -656,9 +753,7 @@ export async function syncCalendarEvents(
         expiration_date: item.program.expiration_date,
         expirationDate: item.program.expiration_date,
         reminderDate: subtractMonths(item.program.expiration_date || "", 3),
-        eventDate: compareLocalDates(subtractMonths(item.program.expiration_date || "", 3), formatLocalDate(new Date())) < 0
-          ? formatLocalDate(new Date())
-          : subtractMonths(item.program.expiration_date || "", 3),
+        eventDate: getGoogleEventDate(item.program.expiration_date),
         accountName: getAccountName(item.program),
         holderName: getHolderName(item.program),
         maskedCpf: getMaskedCpf(item.program.cpf),
@@ -813,9 +908,7 @@ function formatProgramAmount(program: ProgramRow, kind: "Pontos" | "Milhas") {
 
 function getGoogleEventDate(expirationDate: string | null | undefined) {
   if (!expirationDate) return null;
-  const reminderDate = subtractMonths(expirationDate, 3);
-  const today = formatLocalDate(new Date());
-  return compareLocalDates(reminderDate, today) < 0 ? today : reminderDate;
+  return subtractMonths(expirationDate, 3);
 }
 
 function formatCurrencyBRL(value: number) {
