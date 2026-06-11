@@ -2059,7 +2059,8 @@ function Dashboard({
 
     const controller = new AbortController();
     const timeoutId = window.setTimeout(() => controller.abort(), 30000);
-    const calendarWindow = window.open("about:blank", "_blank", "noopener,noreferrer");
+    const calendarWindow = window.open("about:blank", "_blank");
+    console.log("calendarWindow aberto:", !!calendarWindow);
 
     setIsCalendarSyncing(true);
     setCalendarSyncStatus("Sincronizando Google Agenda...");
@@ -2150,11 +2151,14 @@ function Dashboard({
           ? "Tudo certo! Os vencimentos elegíveis já estavam no Google Agenda."
           : `Google Agenda sincronizado: ${createdCount} criados, ${updatedCount} atualizados, ${recreatedCount} recriados.`;
 
+      console.log("sync success:", payload);
       setCalendarSyncStatus(successMessage);
       setCalendarSyncAction({ label: "Abrir Google Agenda", url: googleCalendarUrl });
 
       if (calendarWindow && !calendarWindow.closed) {
-        calendarWindow.location.href = googleCalendarUrl;
+        console.log("redirecionando para Google Agenda");
+        calendarWindow.location.replace(googleCalendarUrl);
+        calendarWindow.focus();
       }
     } catch (error) {
       console.error("[google-sync] sync exception", error);
