@@ -623,6 +623,7 @@ async function upsertGoogleEvent(
   preferUpdate: boolean,
   clearStoredEventId: () => Promise<void>,
 ): Promise<{ eventId: string; action: "created" | "updated" | "recreated" }> {
+  console.log("GOOGLE CALENDAR EVENT PAYLOAD", event);
   if (preferUpdate) {
     const updateResponse = await callGoogleCalendar("PUT", calendarId, eventId, accessToken, event);
     if (updateResponse.ok) return { eventId, action: "updated" as const };
