@@ -1916,6 +1916,7 @@ export default function App() {
             <Dashboard
               data={data}
               accessToken={session?.access_token ?? ""}
+              selectedClientId={activeClientId}
               goTo={setActiveSection}
               onOpenProgram={(request) => {
                 setProgramFocusRequest({ ...request, requestId: Date.now() });
@@ -2008,11 +2009,13 @@ function LoginPage({ onLogin }: { onLogin: (email: string, password: string) => 
 function Dashboard({
   data,
   accessToken,
+  selectedClientId,
   goTo,
   onOpenProgram,
 }: {
   data: AppData;
   accessToken: string;
+  selectedClientId: string;
   goTo: (section: Section) => void;
   onOpenProgram: (request: Omit<ProgramFocusRequest, "requestId">) => void;
 }) {
@@ -2079,6 +2082,7 @@ function Dashboard({
     const timeoutId = window.setTimeout(() => controller.abort(), 30000);
     const calendarWindow = window.open("about:blank", "_blank");
     console.log("calendarWindow aberto:", !!calendarWindow);
+    console.log("[google-sync] selected client/profile", selectedClientId);
 
     setIsCalendarSyncing(true);
     setCalendarSyncStatus("Sincronizando Google Agenda...");
@@ -2092,7 +2096,7 @@ function Dashboard({
           Authorization: `Bearer ${accessToken}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ clientId: data.id }),
+        body: JSON.stringify({ clientId: selectedClientId || data.id }),
         signal: controller.signal,
       });
       const responseText = await response.text();
@@ -2120,6 +2124,7 @@ function Dashboard({
         items: typeof payload === "object" && payload !== null ? payload.items : undefined,
         body: payload,
       });
+      console.log("[google-sync] response", payload);
 
       if (typeof payload === "object" && payload !== null && Array.isArray(payload.items)) {
         console.log("GOOGLE CALENDAR SYNC ITEMS", payload.items);
@@ -2133,10 +2138,12 @@ function Dashboard({
       const payloadConnected = typeof payload === "object" && payload !== null ? payload.connected : undefined;
       const authUrl = typeof payload === "object" && payload !== null ? payload.authUrl : undefined;
       const connectUrl = typeof payload === "object" && payload !== null ? payload.connectUrl : undefined;
-      const needsGoogleConnection = response.status === 401 || payload.code === "needs_google_connection" || payloadConnected === false;
+      const needsGoogleConnection = response.status === 401 || payload.code === "needs_google_connection" || payload.reason === "google_not_connected" || payloadConnected === false;
 
       if (needsGoogleConnection) {
-        const connectionMessage = "Sua conta Google não está conectada. Conecte sua conta para sincronizar.";
+        const connectionMessage = typeof payload.message === "string" && payload.message
+          ? payload.message
+          : "Este perfil ainda não está conectado ao Google Agenda. Conecte o Google Agenda para sincronizar os vencimentos.";
         console.error("[google-sync] connection missing", {
           status: response.status,
           payload,
@@ -2175,7 +2182,9 @@ function Dashboard({
       const recreatedCount = Number(payload.recreatedCount ?? 0);
       const googleEventExistsCount = Number(payload.googleEventExistsCount ?? 0);
       const successMessage =
-        createdCount === 0 && updatedCount === 0 && recreatedCount === 0 && googleEventExistsCount > 0
+        payload.eligibleCount === 0
+          ? "Nenhum vencimento elegível para sincronizar neste perfil."
+          : createdCount === 0 && updatedCount === 0 && recreatedCount === 0 && googleEventExistsCount > 0
           ? "Tudo certo! Os vencimentos elegíveis já estavam no Google Agenda."
           : `Google Agenda sincronizado: ${createdCount} criados, ${updatedCount} atualizados, ${recreatedCount} recriados.`;
 

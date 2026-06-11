@@ -15,7 +15,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
   console.log("[google-sync] start");
 
   if (req.method !== "POST") {
-    res.status(405).json(createSyncErrorBody("M√©todo n√£o permitido."));
+    res.status(405).json(createSyncErrorBody("MÈtodo n„o permitido."));
     console.log("[google-sync] finished", { status: 405 });
     return;
   }
@@ -30,16 +30,21 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     userIdReceived = Boolean(user.id);
     console.log("[google-sync] user found", { found: userIdReceived });
     console.log("[google-sync] user_id recebido", { sim: userIdReceived });
+    console.log("GOOGLE SYNC AUTH USER ID", user.id);
 
     const connection = await getConnection(user.id);
     connectionFound = Boolean(connection);
     console.log("[google-sync] connection found", { found: Boolean(connection) });
-    console.log("[google-sync] conex√£o Google encontrada", { sim: Boolean(connection) });
+    console.log("[google-sync] conex„o Google encontrada", { sim: Boolean(connection) });
     console.log("[google-sync] refresh_token encontrado", { sim: Boolean(connection?.refresh_token_encrypted) });
+    console.log("GOOGLE SYNC HAS GOOGLE TOKENS", Boolean(connection?.refresh_token_encrypted || connection?.access_token_encrypted));
 
     if (!connection) {
       statusCode = 401;
-      res.status(401).json(createSyncErrorBody("Google Agenda n√£o conectado.", {
+      res.status(401).json(createSyncErrorBody("Google Agenda n„o conectado.", {
+        connected: false,
+        reason: "google_not_connected",
+        message: "Este perfil ainda n„o est· conectado ao Google Agenda.",
         code: "needs_google_connection",
         connectUrl: "/api/google/connect",
         authUrl: createGoogleAuthUrl(req, user.id),
@@ -48,6 +53,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     }
 
     const body = typeof req.body === "object" && req.body !== null ? req.body as { clientId?: string } : {};
+    console.log("GOOGLE SYNC SELECTED CLIENT ID", body.clientId ?? null);
     const result = await withTimeout(syncCalendarEvents(user.id, body.clientId, connection), syncTimeoutMs);
     res.status(200).json(result);
   } catch (error) {
@@ -72,6 +78,7 @@ function createSyncErrorBody(message: string, extras: Record<string, unknown> = 
     ok: false,
     partial: false,
     connected: false,
+    reason: "sync_error",
     eligibleCount: 0,
     createdCount: 0,
     updatedCount: 0,
@@ -88,6 +95,7 @@ function createSyncErrorBody(message: string, extras: Record<string, unknown> = 
       unknown_error: 0,
     },
     items: [],
+    errors: [],
     error: message,
     ...extras,
   };
@@ -101,3 +109,4 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number) {
 
   return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timeoutId));
 }
+

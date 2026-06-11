@@ -361,8 +361,12 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
   const items: GoogleCalendarItemResult[] = [];
 
   const supabase = getSupabaseAdmin();
+  // Google Calendar is connected once per logged-in user; clientId only scopes which records are synced.
   const calendarId = connection.calendar_id || "primary";
   console.log("GOOGLE CALENDAR CALENDAR_ID", calendarId);
+  console.log("GOOGLE SYNC SELECTED CLIENT ID", clientId ?? null);
+  console.log("GOOGLE SYNC AUTH USER ID", userId);
+  console.log("GOOGLE SYNC HAS GOOGLE TOKENS", Boolean(connection.refresh_token_encrypted || connection.access_token_encrypted));
   const [pointsResult, milesResult, clientsResult] = await Promise.all([
     selectPrograms("points_programs", userId, clientId),
     selectPrograms("miles_programs", userId, clientId),
@@ -418,6 +422,7 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
 
   console.log("[google-sync] vencimentos encontrados", { quantidade: expirations.length });
   console.log("[google-sync] eligible count", { count: expirations.length });
+  console.log("GOOGLE SYNC ELIGIBLE COUNT", expirations.length);
 
   let createdCount = 0;
   let updatedCount = 0;
@@ -544,7 +549,7 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
   const verifiedCount = items.filter((item) => item.verified).length;
   const successfulCount = createdCount + updatedCount + recreatedCount;
   const partial = errors.length > 0 || items.some((item) => item.action === "failed");
-  const ok = successfulCount > 0 && verifiedCount === successfulCount && !partial;
+  const ok = errors.length === 0 && verifiedCount === successfulCount && (successfulCount > 0 || expirations.length === 0);
   const result = {
     ok,
     partial,
