@@ -2091,7 +2091,6 @@ function Dashboard({
     const timeoutId = window.setTimeout(() => controller.abort(), 30000);
     const calendarWindow = window.open("about:blank", "_blank");
     const selectedClient = data;
-    const selectedProfileName = data.profile?.name?.trim() || "";
     console.log("calendarWindow aberto:", !!calendarWindow);
     console.log("PERFIL SELECIONADO PARA SYNC", selectedClientId);
     console.log("sync clientId", selectedClientId);
@@ -2200,18 +2199,13 @@ function Dashboard({
       const recreatedCount = Number(payload.recreatedCount ?? 0);
       const googleEventExistsCount = Number(payload.googleEventExistsCount ?? 0);
       const payloadItems = Array.isArray(payload.items) ? payload.items as GoogleCalendarSyncItem[] : [];
-      const payloadClientName = payloadItems.find((item) => item.clientName && item.clientName !== "Não identificado")?.clientName || selectedProfileName || "";
-      const hasSummaryWithoutClient = payloadItems.some(
-        (item) => item.googleSummary && payloadClientName && !item.googleSummary.includes(payloadClientName),
-      );
+      const hasSummaryWithoutClient = payloadItems.some((item) => item.googleSummary && item.clientName && item.clientName !== "Não identificado" && !item.googleSummary.includes(item.clientName));
       const successMessage =
         payload.eligibleCount === 0
           ? "Nenhum vencimento elegível para sincronizar neste perfil."
           : createdCount === 0 && updatedCount === 0 && recreatedCount === 0 && googleEventExistsCount > 0
           ? "Tudo certo! Os vencimentos elegíveis já estavam no Google Agenda."
-          : payloadClientName
-          ? `Google Agenda sincronizado para ${payloadClientName}: ${createdCount} criados, ${updatedCount} atualizados, ${recreatedCount} recriados.`
-          : `Google Agenda sincronizado: ${createdCount} criados, ${updatedCount} atualizados, ${recreatedCount} recriados.`;
+          : `Google Agenda sincronizado para todos os perfis: ${createdCount} criados, ${updatedCount} atualizados, ${recreatedCount} recriados.`;
 
       console.log("sync success:", payload);
       setCalendarSyncStatus(

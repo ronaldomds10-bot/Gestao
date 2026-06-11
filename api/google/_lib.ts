@@ -408,20 +408,13 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
       },
     ]),
   );
-  const selectedClient = clientId
-    ? clientMap.get(clientId) ?? null
-    : null;
-  const selectedClientName = resolveClientName(selectedClient);
-  console.log("GOOGLE SYNC SELECTED CLIENT", { clientId: clientId ?? null, clientName: selectedClientName });
+  console.log("GOOGLE SYNC SELECTED CLIENT", { clientId: clientId ?? null });
   console.log("[google-sync] clientId:", clientId ?? null);
-  console.log("[google-sync] clientName:", selectedClientName);
-  if (!selectedClient) {
-    throw new ApiError(400, "Cliente/perfil selecionado não encontrado.", { clientId });
-  }
+  console.log("[google-sync] clientName:", "sync-all-profiles");
 
   const [pointsResult, milesResult] = await Promise.all([
-    selectPrograms("points_programs", userId, clientId),
-    selectPrograms("miles_programs", userId, clientId),
+    selectPrograms("points_programs", userId),
+    selectPrograms("miles_programs", userId),
   ]);
 
   if (pointsResult.error) {
@@ -474,13 +467,23 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
   const errors: CalendarSyncError[] = [];
 
   for (const item of expirations) {
-    const programClientId = item.program.client_id ?? clientId ?? null;
-    const clientName = selectedClientName;
-    const resolvedClientId = programClientId ?? clientId ?? null;
+    const programClientId = item.program.client_id ?? null;
+    const programClient = programClientId ? clientMap.get(programClientId) ?? null : null;
+    const clientName = resolveClientName(programClient);
+    const resolvedClientId = programClientId;
     if (clientName === "Não identificado") {
       console.warn("[google-sync] clientName não encontrado", { clientId: resolvedClientId, item });
     }
     const event = buildCalendarEvent(item.kind, item.program, clientName);
+    console.log("SYNC ITEM", {
+      clientId: resolvedClientId,
+      clientName,
+      program: getProgramName(item.program),
+      amount: formatProgramAmount(item.program, item.kind),
+      expirationDate: item.program.expiration_date,
+      eventDate: event.start.date,
+    });
+    console.log("GOOGLE PAYLOAD", event);
     console.log("GOOGLE SYNC SELECTED CLIENT", { clientId: resolvedClientId, clientName });
     console.log("GOOGLE CALENDAR EVENT SUMMARY", event.summary);
     console.log("GOOGLE CALENDAR EVENT DESCRIPTION", event.description);
@@ -672,10 +675,6 @@ function selectPrograms(table: "points_programs" | "miles_programs", userId: str
     .from(table)
     .select("*")
     .eq("user_id", userId);
-
-  if (clientId) {
-    query = query.eq("client_id", clientId);
-  }
 
   return query;
 }
