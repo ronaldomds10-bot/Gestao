@@ -85,6 +85,9 @@ type GoogleCalendarItemResult = {
   amount: string;
   type: "Pontos" | "Milhas";
   expiration_date: string | null;
+  expirationDate: string | null;
+  reminderDate: string | null;
+  eventDate: string | null;
   action: "created" | "updated" | "recreated" | "failed";
   calendarId: string;
   googleEventId: string | null;
@@ -488,6 +491,11 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
           amount: formatProgramAmount(item.program, item.kind),
           type: item.kind,
           expiration_date: item.program.expiration_date,
+          expirationDate: item.program.expiration_date,
+          reminderDate: subtractMonths(item.program.expiration_date || "", 3),
+          eventDate: compareLocalDates(subtractMonths(item.program.expiration_date || "", 3), formatLocalDate(new Date())) < 0
+            ? formatLocalDate(new Date())
+            : subtractMonths(item.program.expiration_date || "", 3),
           action: result.action,
           calendarId,
           googleEventId: result.event.id || result.eventId,
@@ -506,6 +514,11 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
         amount: formatProgramAmount(item.program, item.kind),
         type: item.kind,
         expiration_date: item.program.expiration_date,
+        expirationDate: item.program.expiration_date,
+        reminderDate: subtractMonths(item.program.expiration_date || "", 3),
+        eventDate: compareLocalDates(subtractMonths(item.program.expiration_date || "", 3), formatLocalDate(new Date())) < 0
+          ? formatLocalDate(new Date())
+          : subtractMonths(item.program.expiration_date || "", 3),
         action: result.action,
         calendarId,
         googleEventId: result.event.id || result.eventId,
@@ -532,6 +545,11 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
         amount: formatProgramAmount(item.program, item.kind),
         type: item.kind,
         expiration_date: item.program.expiration_date,
+        expirationDate: item.program.expiration_date,
+        reminderDate: subtractMonths(item.program.expiration_date || "", 3),
+        eventDate: compareLocalDates(subtractMonths(item.program.expiration_date || "", 3), formatLocalDate(new Date())) < 0
+          ? formatLocalDate(new Date())
+          : subtractMonths(item.program.expiration_date || "", 3),
         action: "failed",
         calendarId,
         googleEventId: eventId,
@@ -698,6 +716,9 @@ function isValidLocalDate(date: string) {
 function buildCalendarEvent(kind: "Pontos" | "Milhas", program: ProgramRow, client: { name?: string | null; email?: string | null } | null): GoogleCalendarEventPayload {
   const programName = getProgramName(program);
   const expirationDate = program.expiration_date || "";
+  const reminderDate = subtractMonths(expirationDate, 3);
+  const today = formatLocalDate(new Date());
+  const eventDate = compareLocalDates(reminderDate, today) < 0 ? today : reminderDate;
   const daysRemaining = getDaysRemaining(expirationDate);
   const amount = formatProgramAmount(program, kind);
   const typeLabel = getProgramTypeLabel(kind);
@@ -708,7 +729,8 @@ function buildCalendarEvent(kind: "Pontos" | "Milhas", program: ProgramRow, clie
     `Programa: ${programName}`,
     `Quantidade: ${amount}`,
     `Tipo: ${typeLabel}`,
-    `Vencimento: ${formatPtBrDate(expirationDate)}`,
+    `Data real de vencimento: ${formatPtBrDate(expirationDate)}`,
+    `Aviso criado com 3 meses de antecedência: ${formatPtBrDate(reminderDate)}`,
     `Status: ${statusLabel}`,
     clientName ? `Cliente: ${clientName}` : "",
     `Valor estimado: ${formatCurrencyBRL(estimatedValue)}`,
@@ -717,10 +739,10 @@ function buildCalendarEvent(kind: "Pontos" | "Milhas", program: ProgramRow, clie
   ].filter(Boolean);
 
   return {
-    summary: `Vencimento: ${programName} - ${amount}`,
+    summary: `Aviso: ${programName} - ${amount} vencem em ${formatPtBrDate(expirationDate)}`,
     description: descriptionLines.join("\n"),
-    start: { date: expirationDate },
-    end: { date: addDays(expirationDate, 1) },
+    start: { date: eventDate },
+    end: { date: addDays(eventDate, 1) },
   };
 }
 
@@ -1009,6 +1031,30 @@ function addDays(date: string, days: number) {
   const parsed = new Date(`${date}T00:00:00`);
   parsed.setDate(parsed.getDate() + days);
   return parsed.toISOString().slice(0, 10);
+}
+
+function subtractMonths(date: string, months: number) {
+  if (!isValidLocalDate(date)) return "";
+
+  const parsed = new Date(`${date}T00:00:00`);
+  const year = parsed.getFullYear();
+  const monthIndex = parsed.getMonth() - months;
+  const target = new Date(year, monthIndex + 1, 0);
+  const targetDay = Math.min(parsed.getDate(), target.getDate());
+  parsed.setFullYear(target.getFullYear(), target.getMonth(), targetDay);
+
+  return parsed.toISOString().slice(0, 10);
+}
+
+function compareLocalDates(left: string, right: string) {
+  const leftDate = new Date(`${left}T00:00:00`).getTime();
+  const rightDate = new Date(`${right}T00:00:00`).getTime();
+  if (Number.isNaN(leftDate) || Number.isNaN(rightDate)) return 0;
+  return leftDate - rightDate;
+}
+
+function formatLocalDate(date: Date) {
+  return date.toISOString().slice(0, 10);
 }
 
 function getDaysRemaining(expirationDate: string) {

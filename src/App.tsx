@@ -86,6 +86,9 @@ type GoogleCalendarSyncItem = {
   amount: string;
   type: "Pontos" | "Milhas";
   expiration_date: string | null;
+  expirationDate: string | null;
+  reminderDate: string | null;
+  eventDate: string | null;
   action: "created" | "updated" | "recreated" | "failed";
   calendarId: string;
   googleEventId: string | null;
@@ -2134,6 +2137,11 @@ function Dashboard({
         setCalendarSyncItems([]);
       }
 
+      const firstEventDate = typeof payload === "object" && payload !== null && Array.isArray(payload.items)
+        ? (payload.items as GoogleCalendarSyncItem[]).find((item) => item.eventDate || item.googleStart?.date)?.eventDate
+          || (payload.items as GoogleCalendarSyncItem[]).find((item) => item.eventDate || item.googleStart?.date)?.googleStart?.date
+          || null
+        : null;
       const payloadOk = typeof payload === "object" && payload !== null ? payload.ok === true : false;
       const payloadConnected = typeof payload === "object" && payload !== null ? payload.connected : undefined;
       const authUrl = typeof payload === "object" && payload !== null ? payload.authUrl : undefined;
@@ -2190,11 +2198,11 @@ function Dashboard({
 
       console.log("sync success:", payload);
       setCalendarSyncStatus(successMessage);
-      setCalendarSyncAction({ label: "Abrir Google Agenda", url: googleCalendarUrl });
+      setCalendarSyncAction({ label: "Abrir Google Agenda", url: getGoogleCalendarDayUrl(firstEventDate) });
 
       if (calendarWindow && !calendarWindow.closed) {
         console.log("redirecionando para Google Agenda");
-        calendarWindow.location.replace(googleCalendarUrl);
+        calendarWindow.location.replace(getGoogleCalendarDayUrl(firstEventDate));
         calendarWindow.focus();
       }
     } catch (error) {
@@ -2341,6 +2349,7 @@ function Dashboard({
               <CalendarClock size={16} />
               <span>{isCalendarSyncing ? "Sincronizando..." : "Sincronizar com Google Agenda"}</span>
             </button>
+            <p className={"text-xs " + supportTextClass}>Os lembretes são criados no Google Agenda com 3 meses de antecedência.</p>
             {calendarSyncAction && (
               <a
                 href={calendarSyncAction.url}
@@ -4163,4 +4172,14 @@ function Select({
 
 function formatDate(value: string) {
   return new Date(`${value}T00:00:00`).toLocaleDateString("pt-BR");
+}
+
+function getGoogleCalendarDayUrl(date?: string | null) {
+  if (!date) return googleCalendarUrl;
+  const parsed = new Date(`${date}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) return googleCalendarUrl;
+  const year = parsed.getFullYear();
+  const month = parsed.getMonth() + 1;
+  const day = parsed.getDate();
+  return `https://calendar.google.com/calendar/u/0/r/day/${year}/${month}/${day}`;
 }
