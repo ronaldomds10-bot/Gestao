@@ -36,6 +36,16 @@ type ProgramRow = {
   expiration_date: string | null;
   calendar_sync_enabled?: boolean | null;
   google_event_id: string | null;
+  account_name?: string | null;
+  program_account_name?: string | null;
+  loyalty_account?: string | null;
+  membership_number?: string | null;
+  cpf?: string | null;
+  holder_name?: string | null;
+  client_name?: string | null;
+  profile_name?: string | null;
+  customer_name?: string | null;
+  full_name?: string | null;
 };
 
 type CalendarSyncError = {
@@ -81,6 +91,8 @@ type GoogleCalendarEventSnapshot = {
 };
 
 type GoogleCalendarItemResult = {
+  clientId: string | null;
+  clientName: string;
   program: string;
   amount: string;
   type: "Pontos" | "Milhas";
@@ -88,6 +100,9 @@ type GoogleCalendarItemResult = {
   expirationDate: string | null;
   reminderDate: string | null;
   eventDate: string | null;
+  accountName?: string | null;
+  holderName?: string | null;
+  maskedCpf?: string | null;
   action: "created" | "updated" | "recreated" | "failed";
   calendarId: string;
   googleEventId: string | null;
@@ -366,16 +381,36 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
   const supabase = getSupabaseAdmin();
   // Google Calendar is connected once per logged-in user; clientId only scopes which records are synced.
   const calendarId = connection.calendar_id || "primary";
+  const clientsResult = await supabase
+    .from("clients")
+    .select("id,name,email,phone,plan,local_id")
+    .eq("user_id", userId);
+
   console.log("GOOGLE CALENDAR CALENDAR_ID", calendarId);
   console.log("GOOGLE SYNC SELECTED CLIENT ID", clientId ?? null);
   console.log("GOOGLE SYNC AUTH USER ID", userId);
   console.log("GOOGLE SYNC HAS GOOGLE TOKENS", Boolean(connection.refresh_token_encrypted || connection.access_token_encrypted));
-  const [pointsResult, milesResult, clientsResult] = await Promise.all([
+  if (clientsResult.error) {
+    logGoogleSyncSupabaseError("select_clients", clientsResult.error);
+    throw new ApiError(500, "Não foi possível carregar clientes.", clientsResult.error);
+  }
+
+  const clientMap = new Map<string, { id: string; name?: string | null; email?: string | null }>(
+    (clientsResult.data ?? []).map((row: Record<string, unknown>) => [
+      String(row.id),
+      {
+        id: String(row.id),
+        name: typeof row.name === "string" ? row.name : null,
+        email: typeof row.email === "string" ? row.email : null,
+      },
+    ]),
+  );
+  const selectedClient = clientId ? clientMap.get(clientId) ?? null : null;
+  console.log("GOOGLE SYNC SELECTED CLIENT", { clientId: clientId ?? null, clientName: resolveClientName(selectedClient) });
+
+  const [pointsResult, milesResult] = await Promise.all([
     selectPrograms("points_programs", userId, clientId),
     selectPrograms("miles_programs", userId, clientId),
-    clientId
-      ? supabase.from("clients").select("id,name,email").eq("user_id", userId).eq("id", clientId).maybeSingle()
-      : Promise.resolve({ data: null, error: null }),
   ]);
 
   if (pointsResult.error) {
@@ -386,12 +421,6 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
     logGoogleSyncSupabaseError("select_miles_programs", milesResult.error);
     throw new ApiError(500, "Não foi possível carregar milhas.", milesResult.error);
   }
-  if (clientsResult.error) {
-    logGoogleSyncSupabaseError("select_client", clientsResult.error);
-    throw new ApiError(500, "Não foi possível carregar cliente.", clientsResult.error);
-  }
-
-  const client = clientsResult.data as { name?: string | null; email?: string | null } | null;
   const candidates = [
     ...(pointsResult.data ?? []).map((program: ProgramRow) => ({ type: "points" as const, kind: "Pontos" as const, table: "points_programs" as const, program })),
     ...(milesResult.data ?? []).map((program: ProgramRow) => ({ type: "miles" as const, kind: "Milhas" as const, table: "miles_programs" as const, program })),
@@ -434,7 +463,17 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
   const errors: CalendarSyncError[] = [];
 
   for (const item of expirations) {
-    const event = buildCalendarEvent(item.kind, item.program, client);
+    const programClientId = item.program.client_id ?? clientId ?? null;
+    const programClient = programClientId ? clientMap.get(programClientId) ?? null : null;
+    const clientName = resolveClientName(programClient);
+    if (clientName === "Não identificado") {
+      console.warn("GOOGLE SYNC CLIENT NAME NOT FOUND", { clientId: programClientId, item });
+    }
+
+    const event = buildCalendarEvent(item.kind, item.program, programClient);
+    console.log("GOOGLE SYNC SELECTED CLIENT", { clientId: programClientId, clientName });
+    console.log("GOOGLE CALENDAR EVENT SUMMARY", event.summary);
+    console.log("GOOGLE CALENDAR EVENT DESCRIPTION", event.description);
     const eventId = item.program.google_event_id || deterministicEventId(userId, item.table, item.program.id, item.program.expiration_date || "");
     try {
       if (item.program.google_event_id) {
@@ -487,6 +526,8 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
         });
         errors.push(getCalendarSyncError(item.table, item.program.id, error));
         items.push({
+          clientId: programClientId,
+          clientName,
           program: getProgramName(item.program),
           amount: formatProgramAmount(item.program, item.kind),
           type: item.kind,
@@ -496,6 +537,9 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
           eventDate: compareLocalDates(subtractMonths(item.program.expiration_date || "", 3), formatLocalDate(new Date())) < 0
             ? formatLocalDate(new Date())
             : subtractMonths(item.program.expiration_date || "", 3),
+          accountName: getAccountName(item.program),
+          holderName: getHolderName(item.program),
+          maskedCpf: getMaskedCpf(item.program.cpf),
           action: result.action,
           calendarId,
           googleEventId: result.event.id || result.eventId,
@@ -510,6 +554,8 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
       }
 
       items.push({
+        clientId: programClientId,
+        clientName,
         program: getProgramName(item.program),
         amount: formatProgramAmount(item.program, item.kind),
         type: item.kind,
@@ -519,6 +565,9 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
         eventDate: compareLocalDates(subtractMonths(item.program.expiration_date || "", 3), formatLocalDate(new Date())) < 0
           ? formatLocalDate(new Date())
           : subtractMonths(item.program.expiration_date || "", 3),
+        accountName: getAccountName(item.program),
+        holderName: getHolderName(item.program),
+        maskedCpf: getMaskedCpf(item.program.cpf),
         action: result.action,
         calendarId,
         googleEventId: result.event.id || result.eventId,
@@ -540,20 +589,25 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
         skipReason: "google_upsert_failed",
         error: getSafeErrorDetails(error),
       });
-      items.push({
-        program: getProgramName(item.program),
-        amount: formatProgramAmount(item.program, item.kind),
-        type: item.kind,
-        expiration_date: item.program.expiration_date,
-        expirationDate: item.program.expiration_date,
-        reminderDate: subtractMonths(item.program.expiration_date || "", 3),
-        eventDate: compareLocalDates(subtractMonths(item.program.expiration_date || "", 3), formatLocalDate(new Date())) < 0
-          ? formatLocalDate(new Date())
-          : subtractMonths(item.program.expiration_date || "", 3),
-        action: "failed",
-        calendarId,
-        googleEventId: eventId,
-        googleHtmlLink: null,
+        items.push({
+          clientId: programClientId,
+          clientName,
+          program: getProgramName(item.program),
+          amount: formatProgramAmount(item.program, item.kind),
+          type: item.kind,
+          expiration_date: item.program.expiration_date,
+          expirationDate: item.program.expiration_date,
+          reminderDate: subtractMonths(item.program.expiration_date || "", 3),
+          eventDate: compareLocalDates(subtractMonths(item.program.expiration_date || "", 3), formatLocalDate(new Date())) < 0
+            ? formatLocalDate(new Date())
+            : subtractMonths(item.program.expiration_date || "", 3),
+          accountName: getAccountName(item.program),
+          holderName: getHolderName(item.program),
+          maskedCpf: getMaskedCpf(item.program.cpf),
+          action: "failed",
+          calendarId,
+          googleEventId: eventId,
+          googleHtmlLink: null,
         googleSummary: event.summary,
         googleStart: event.start,
         googleEnd: event.end,
@@ -601,12 +655,9 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
 
 function selectPrograms(table: "points_programs" | "miles_programs", userId: string, clientId?: string) {
   const supabase = getSupabaseAdmin();
-  const columns = table === "points_programs"
-    ? "id,user_id,client_id,program_name,balance,cpm,expiration_date,calendar_sync_enabled,google_event_id"
-    : "id,user_id,client_id,airline,balance,cpm,expiration_date,calendar_sync_enabled,google_event_id";
   let query = supabase
     .from(table)
-    .select(columns)
+    .select("*")
     .eq("user_id", userId);
 
   if (clientId) {
@@ -655,6 +706,34 @@ function getEligibilitySkipReason(program: ProgramRow, calendarId: string | null
 
 function getProgramName(program: ProgramRow) {
   return program.program_name || program.airline || program.name || "Programa";
+}
+
+function resolveClientName(client: { name?: string | null; email?: string | null } | null | undefined) {
+  const name = client?.name?.trim();
+  if (name) return name;
+  const email = client?.email?.trim();
+  if (email) return email;
+  return "Não identificado";
+}
+
+function getMaskedCpf(value?: string | null) {
+  const digits = String(value ?? "").replace(/\D/g, "");
+  if (digits.length !== 11) return null;
+  return `***.***.***-${digits.slice(-2)}`;
+}
+
+function getAccountName(program: ProgramRow) {
+  return (
+    program.account_name
+    || program.program_account_name
+    || program.loyalty_account
+    || program.membership_number
+    || null
+  );
+}
+
+function getHolderName(program: ProgramRow) {
+  return program.holder_name || null;
 }
 
 function getProgramTypeLabel(kind: "Pontos" | "Milhas") {
@@ -724,22 +803,28 @@ function buildCalendarEvent(kind: "Pontos" | "Milhas", program: ProgramRow, clie
   const typeLabel = getProgramTypeLabel(kind);
   const statusLabel = getDaysLabel(daysRemaining);
   const estimatedValue = Number(program.balance ?? 0) * Number(program.cpm ?? 0);
-  const clientName = client?.name || client?.email || "";
+  const clientName = resolveClientName(client);
+  const accountName = getAccountName(program);
+  const holderName = getHolderName(program);
+  const maskedCpf = getMaskedCpf(program.cpf);
   const descriptionLines = [
+    `Cliente/Perfil: ${clientName}`,
     `Programa: ${programName}`,
     `Quantidade: ${amount}`,
     `Tipo: ${typeLabel}`,
     `Data real de vencimento: ${formatPtBrDate(expirationDate)}`,
     `Aviso criado com 3 meses de antecedência: ${formatPtBrDate(reminderDate)}`,
-    `Status: ${statusLabel}`,
-    clientName ? `Cliente: ${clientName}` : "",
-    `Valor estimado: ${formatCurrencyBRL(estimatedValue)}`,
+    `Status no sistema: ${statusLabel}`,
+    accountName ? `Conta vinculada: ${accountName}` : "",
+    holderName ? `Titular: ${holderName}` : "",
+    maskedCpf ? `CPF: ${maskedCpf}` : "",
+    estimatedValue > 0 ? `Valor estimado: ${formatCurrencyBRL(estimatedValue)}` : "",
     "",
     "Atenção: estes pontos/milhas estão próximos do vencimento. Verifique possibilidade de uso, transferência, renovação ou emissão antes da data final.",
   ].filter(Boolean);
 
   return {
-    summary: `Aviso: ${programName} - ${amount} vencem em ${formatPtBrDate(expirationDate)}`,
+    summary: `Aviso: ${clientName} | ${programName} - ${amount} vencem em ${formatPtBrDate(expirationDate)}`,
     description: descriptionLines.join("\n"),
     start: { date: eventDate },
     end: { date: addDays(eventDate, 1) },

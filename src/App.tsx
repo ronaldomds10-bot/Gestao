@@ -82,6 +82,8 @@ type ProgramFocusRequest = {
 };
 
 type GoogleCalendarSyncItem = {
+  clientId: string | null;
+  clientName: string;
   program: string;
   amount: string;
   type: "Pontos" | "Milhas";
@@ -89,6 +91,9 @@ type GoogleCalendarSyncItem = {
   expirationDate: string | null;
   reminderDate: string | null;
   eventDate: string | null;
+  accountName?: string | null;
+  holderName?: string | null;
+  maskedCpf?: string | null;
   action: "created" | "updated" | "recreated" | "failed";
   calendarId: string;
   googleEventId: string | null;
@@ -2091,6 +2096,7 @@ function Dashboard({
     setCalendarSyncStatus("Sincronizando Google Agenda...");
     setCalendarSyncAction(null);
     setCalendarSyncItems([]);
+    const selectedProfileName = data.profile?.name?.trim() || "";
 
     try {
       const response = await fetch("/api/google/sync-calendar", {
@@ -2189,11 +2195,17 @@ function Dashboard({
       const updatedCount = Number(payload.updatedCount ?? 0);
       const recreatedCount = Number(payload.recreatedCount ?? 0);
       const googleEventExistsCount = Number(payload.googleEventExistsCount ?? 0);
+      const payloadClientName = Array.isArray(payload.items)
+        ? (payload.items as GoogleCalendarSyncItem[]).find((item) => item.clientName && item.clientName !== "Não identificado")?.clientName || ""
+        : "";
+      const syncClientName = selectedProfileName || payloadClientName;
       const successMessage =
         payload.eligibleCount === 0
           ? "Nenhum vencimento elegível para sincronizar neste perfil."
           : createdCount === 0 && updatedCount === 0 && recreatedCount === 0 && googleEventExistsCount > 0
           ? "Tudo certo! Os vencimentos elegíveis já estavam no Google Agenda."
+          : syncClientName
+          ? `Google Agenda sincronizado para ${syncClientName}: ${createdCount} criados, ${updatedCount} atualizados, ${recreatedCount} recriados.`
           : `Google Agenda sincronizado: ${createdCount} criados, ${updatedCount} atualizados, ${recreatedCount} recriados.`;
 
       console.log("sync success:", payload);
