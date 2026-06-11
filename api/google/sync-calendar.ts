@@ -54,6 +54,16 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
 
     const body = typeof req.body === "object" && req.body !== null ? req.body as { clientId?: string } : {};
     console.log("GOOGLE SYNC SELECTED CLIENT ID", body.clientId ?? null);
+    if (!body.clientId) {
+      statusCode = 400;
+      res.status(400).json(createSyncErrorBody("Nenhum cliente/perfil selecionado foi enviado para sincronização.", {
+        connected: false,
+        reason: "missing_client_id",
+        message: "Nenhum cliente/perfil selecionado foi enviado para sincronização.",
+      }));
+      return;
+    }
+
     const result = await withTimeout(syncCalendarEvents(user.id, body.clientId, connection), syncTimeoutMs);
     res.status(200).json(result);
   } catch (error) {
@@ -109,4 +119,5 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number) {
 
   return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timeoutId));
 }
+
 

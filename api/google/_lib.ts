@@ -85,6 +85,7 @@ type GoogleCalendarEventSnapshot = {
   id?: string;
   status?: string;
   summary?: string;
+  description?: string;
   htmlLink?: string;
   start?: { date?: string; dateTime?: string };
   end?: { date?: string; dateTime?: string };
@@ -108,6 +109,7 @@ type GoogleCalendarItemResult = {
   googleEventId: string | null;
   googleHtmlLink: string | null;
   googleSummary: string | null;
+  googleDescription: string | null;
   googleStart: GoogleCalendarEventSnapshot["start"] | null;
   googleEnd: GoogleCalendarEventSnapshot["end"] | null;
   verified: boolean;
@@ -406,7 +408,13 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
     ]),
   );
   const selectedClient = clientId ? clientMap.get(clientId) ?? null : null;
-  console.log("GOOGLE SYNC SELECTED CLIENT", { clientId: clientId ?? null, clientName: resolveClientName(selectedClient) });
+  const selectedClientName = resolveClientName(selectedClient);
+  console.log("GOOGLE SYNC SELECTED CLIENT", { clientId: clientId ?? null, clientName: selectedClientName });
+  console.log("[google-sync] clientId:", clientId ?? null);
+  console.log("[google-sync] clientName:", selectedClientName);
+  if (selectedClientName === "Não identificado") {
+    console.warn("[google-sync] clientName não encontrado", { clientId });
+  }
 
   const [pointsResult, milesResult] = await Promise.all([
     selectPrograms("points_programs", userId, clientId),
@@ -464,13 +472,8 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
 
   for (const item of expirations) {
     const programClientId = item.program.client_id ?? clientId ?? null;
-    const programClient = programClientId ? clientMap.get(programClientId) ?? null : null;
-    const clientName = resolveClientName(programClient);
-    if (clientName === "Não identificado") {
-      console.warn("GOOGLE SYNC CLIENT NAME NOT FOUND", { clientId: programClientId, item });
-    }
-
-    const event = buildCalendarEvent(item.kind, item.program, programClient);
+    const clientName = selectedClientName;
+    const event = buildCalendarEvent(item.kind, item.program, clientName);
     console.log("GOOGLE SYNC SELECTED CLIENT", { clientId: programClientId, clientName });
     console.log("GOOGLE CALENDAR EVENT SUMMARY", event.summary);
     console.log("GOOGLE CALENDAR EVENT DESCRIPTION", event.description);
@@ -545,6 +548,7 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
           googleEventId: result.event.id || result.eventId,
           googleHtmlLink: result.event.htmlLink || null,
           googleSummary: result.event.summary || event.summary,
+          googleDescription: result.event.description || event.description,
           googleStart: result.event.start || event.start,
           googleEnd: result.event.end || event.end,
           verified: true,
@@ -573,6 +577,7 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
         googleEventId: result.event.id || result.eventId,
         googleHtmlLink: result.event.htmlLink || null,
         googleSummary: result.event.summary || event.summary,
+        googleDescription: result.event.description || event.description,
         googleStart: result.event.start || event.start,
         googleEnd: result.event.end || event.end,
         verified: true,
@@ -589,26 +594,27 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
         skipReason: "google_upsert_failed",
         error: getSafeErrorDetails(error),
       });
-        items.push({
-          clientId: programClientId,
-          clientName,
-          program: getProgramName(item.program),
-          amount: formatProgramAmount(item.program, item.kind),
-          type: item.kind,
-          expiration_date: item.program.expiration_date,
-          expirationDate: item.program.expiration_date,
-          reminderDate: subtractMonths(item.program.expiration_date || "", 3),
-          eventDate: compareLocalDates(subtractMonths(item.program.expiration_date || "", 3), formatLocalDate(new Date())) < 0
-            ? formatLocalDate(new Date())
-            : subtractMonths(item.program.expiration_date || "", 3),
-          accountName: getAccountName(item.program),
-          holderName: getHolderName(item.program),
-          maskedCpf: getMaskedCpf(item.program.cpf),
-          action: "failed",
-          calendarId,
-          googleEventId: eventId,
-          googleHtmlLink: null,
+      items.push({
+        clientId: programClientId,
+        clientName,
+        program: getProgramName(item.program),
+        amount: formatProgramAmount(item.program, item.kind),
+        type: item.kind,
+        expiration_date: item.program.expiration_date,
+        expirationDate: item.program.expiration_date,
+        reminderDate: subtractMonths(item.program.expiration_date || "", 3),
+        eventDate: compareLocalDates(subtractMonths(item.program.expiration_date || "", 3), formatLocalDate(new Date())) < 0
+          ? formatLocalDate(new Date())
+          : subtractMonths(item.program.expiration_date || "", 3),
+        accountName: getAccountName(item.program),
+        holderName: getHolderName(item.program),
+        maskedCpf: getMaskedCpf(item.program.cpf),
+        action: "failed",
+        calendarId,
+        googleEventId: eventId,
+        googleHtmlLink: null,
         googleSummary: event.summary,
+        googleDescription: event.description,
         googleStart: event.start,
         googleEnd: event.end,
         verified: false,
@@ -711,8 +717,6 @@ function getProgramName(program: ProgramRow) {
 function resolveClientName(client: { name?: string | null; email?: string | null } | null | undefined) {
   const name = client?.name?.trim();
   if (name) return name;
-  const email = client?.email?.trim();
-  if (email) return email;
   return "Não identificado";
 }
 
@@ -792,7 +796,11 @@ function isValidLocalDate(date: string) {
     && parsed.getDate() === day;
 }
 
-function buildCalendarEvent(kind: "Pontos" | "Milhas", program: ProgramRow, client: { name?: string | null; email?: string | null } | null): GoogleCalendarEventPayload {
+function buildCalendarEvent(
+  kind: "Pontos" | "Milhas",
+  program: ProgramRow,
+  clientName: string,
+): GoogleCalendarEventPayload {
   const programName = getProgramName(program);
   const expirationDate = program.expiration_date || "";
   const reminderDate = subtractMonths(expirationDate, 3);
@@ -803,7 +811,6 @@ function buildCalendarEvent(kind: "Pontos" | "Milhas", program: ProgramRow, clie
   const typeLabel = getProgramTypeLabel(kind);
   const statusLabel = getDaysLabel(daysRemaining);
   const estimatedValue = Number(program.balance ?? 0) * Number(program.cpm ?? 0);
-  const clientName = resolveClientName(client);
   const accountName = getAccountName(program);
   const holderName = getHolderName(program);
   const maskedCpf = getMaskedCpf(program.cpf);
@@ -841,6 +848,9 @@ async function upsertGoogleEvent(
 ): Promise<{ eventId: string; action: "created" | "updated" | "recreated"; event: GoogleCalendarEventSnapshot }> {
   console.log("GOOGLE CALENDAR CALENDAR_ID", calendarId);
   console.log("GOOGLE CALENDAR EVENT PAYLOAD", event);
+  console.log("[google-sync] calendar summary:", event.summary);
+  console.log("[google-sync] calendar description:", event.description);
+  console.log("[google-sync] payload enviado:", event);
 
   if (preferUpdate) {
     const updateResponse = await callGoogleCalendar("PUT", calendarId, eventId, accessToken, event);
@@ -856,6 +866,8 @@ async function upsertGoogleEvent(
     }
 
     const verification = await verifyGoogleEvent(accessToken, calendarId, getSnapshotEventId(updateSnapshot.body, eventId));
+    console.log("[google-sync] google response summary:", (verification.body as GoogleCalendarEventSnapshot | null)?.summary);
+    console.log("[google-sync] google response htmlLink:", (verification.body as GoogleCalendarEventSnapshot | null)?.htmlLink);
     if (verification.status === 404) {
       await clearStoredEventId();
       return await recreateGoogleEvent(accessToken, calendarId, eventId, event);
@@ -887,6 +899,8 @@ async function upsertGoogleEvent(
     }
 
     const verification = await verifyGoogleEvent(accessToken, calendarId, getSnapshotEventId(updateSnapshot.body, eventId));
+    console.log("[google-sync] google response summary:", (verification.body as GoogleCalendarEventSnapshot | null)?.summary);
+    console.log("[google-sync] google response htmlLink:", (verification.body as GoogleCalendarEventSnapshot | null)?.htmlLink);
     if (!isValidGoogleEventSnapshot(verification.body, event)) {
       console.error("[google-sync] evento atualizado invalido", {
         calendarId,
@@ -908,6 +922,8 @@ async function upsertGoogleEvent(
   }
 
   const createVerification = await verifyGoogleEvent(accessToken, calendarId, getSnapshotEventId(createResponse.body, eventId));
+  console.log("[google-sync] google response summary:", (createVerification.body as GoogleCalendarEventSnapshot | null)?.summary);
+  console.log("[google-sync] google response htmlLink:", (createVerification.body as GoogleCalendarEventSnapshot | null)?.htmlLink);
   if (!isValidGoogleEventSnapshot(createVerification.body, event)) {
     console.error("[google-sync] evento criado invalido", {
       calendarId,
@@ -932,6 +948,8 @@ async function recreateGoogleEvent(accessToken: string, calendarId: string, even
   }
 
   const verification = await verifyGoogleEvent(accessToken, calendarId, getSnapshotEventId(createResponse.body, recreatedEventId));
+  console.log("[google-sync] google response summary:", (verification.body as GoogleCalendarEventSnapshot | null)?.summary);
+  console.log("[google-sync] google response htmlLink:", (verification.body as GoogleCalendarEventSnapshot | null)?.htmlLink);
   if (!isValidGoogleEventSnapshot(verification.body, event)) {
     console.error("[google-sync] evento recriado invalido", {
       calendarId,

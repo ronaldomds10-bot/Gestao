@@ -99,6 +99,7 @@ type GoogleCalendarSyncItem = {
   googleEventId: string | null;
   googleHtmlLink: string | null;
   googleSummary: string | null;
+  googleDescription: string | null;
   googleStart: { date?: string; dateTime?: string } | null;
   googleEnd: { date?: string; dateTime?: string } | null;
   verified: boolean;
@@ -2089,8 +2090,10 @@ function Dashboard({
     const controller = new AbortController();
     const timeoutId = window.setTimeout(() => controller.abort(), 30000);
     const calendarWindow = window.open("about:blank", "_blank");
+    const selectedClient = data;
     console.log("calendarWindow aberto:", !!calendarWindow);
-    console.log("[google-sync] selected client/profile", selectedClientId);
+    console.log("[google-sync] selectedClientId enviado:", selectedClientId);
+    console.log("[google-sync] selectedClient:", selectedClient);
 
     setIsCalendarSyncing(true);
     setCalendarSyncStatus("Sincronizando Google Agenda...");
@@ -2105,7 +2108,7 @@ function Dashboard({
           Authorization: `Bearer ${accessToken}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ clientId: selectedClientId || data.id }),
+        body: JSON.stringify({ clientId: selectedClientId }),
         signal: controller.signal,
       });
       const responseText = await response.text();
@@ -2138,6 +2141,7 @@ function Dashboard({
       if (typeof payload === "object" && payload !== null && Array.isArray(payload.items)) {
         console.log("GOOGLE CALENDAR SYNC ITEMS", payload.items);
         console.log("GOOGLE CALENDAR SYNC ITEM LINKS", payload.items.filter((item: GoogleCalendarSyncItem) => Boolean(item.googleHtmlLink)));
+        console.log("[google-sync] items retornados:", payload.items);
         setCalendarSyncItems(payload.items as GoogleCalendarSyncItem[]);
       } else {
         setCalendarSyncItems([]);
@@ -2195,10 +2199,10 @@ function Dashboard({
       const updatedCount = Number(payload.updatedCount ?? 0);
       const recreatedCount = Number(payload.recreatedCount ?? 0);
       const googleEventExistsCount = Number(payload.googleEventExistsCount ?? 0);
-      const payloadClientName = Array.isArray(payload.items)
-        ? (payload.items as GoogleCalendarSyncItem[]).find((item) => item.clientName && item.clientName !== "Não identificado")?.clientName || ""
-        : "";
+      const payloadItems = Array.isArray(payload.items) ? payload.items as GoogleCalendarSyncItem[] : [];
+      const payloadClientName = payloadItems.find((item) => item.clientName && item.clientName !== "Não identificado")?.clientName || "";
       const syncClientName = selectedProfileName || payloadClientName;
+      const hasSummaryWithoutClient = payloadItems.some((item) => item.googleSummary && syncClientName && !item.googleSummary.includes(syncClientName));
       const successMessage =
         payload.eligibleCount === 0
           ? "Nenhum vencimento elegível para sincronizar neste perfil."
@@ -2209,7 +2213,11 @@ function Dashboard({
           : `Google Agenda sincronizado: ${createdCount} criados, ${updatedCount} atualizados, ${recreatedCount} recriados.`;
 
       console.log("sync success:", payload);
-      setCalendarSyncStatus(successMessage);
+      setCalendarSyncStatus(
+        hasSummaryWithoutClient
+          ? "Evento sincronizado, mas o nome do cliente não foi incluído no Google Agenda."
+          : successMessage,
+      );
       setCalendarSyncAction({ label: "Abrir Google Agenda", url: getGoogleCalendarDayUrl(firstEventDate) });
 
       if (calendarWindow && !calendarWindow.closed) {
