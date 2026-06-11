@@ -419,8 +419,8 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
   console.log("[google-sync] clientName:", selectedClientName);
 
   const [pointsResult, milesResult] = await Promise.all([
-    selectPrograms("points_programs", userId),
-    selectPrograms("miles_programs", userId),
+    selectPrograms("points_programs", userId, clientId),
+    selectPrograms("miles_programs", userId, clientId),
   ]);
 
   if (pointsResult.error) {
@@ -473,18 +473,19 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
   const errors: CalendarSyncError[] = [];
 
   for (const item of expirations) {
-    const programClientId = item.program.client_id ?? null;
+    const programClientId = item.program.client_id ?? clientId ?? null;
     const programClient = programClientId
       ? clientMap.get(programClientId)
         ?? [...clientMap.values()].find((client) => client.localId === programClientId)
         ?? null
       : null;
-    const clientName = resolveClientName(programClient);
+    const clientName = resolveClientName(programClient ?? selectedClient);
+    const resolvedClientId = programClientId ?? clientId ?? null;
     if (clientName === "Não identificado") {
-      console.warn("[google-sync] clientName não encontrado", { clientId: programClientId, item });
+      console.warn("[google-sync] clientName não encontrado", { clientId: resolvedClientId, item });
     }
     const event = buildCalendarEvent(item.kind, item.program, clientName);
-    console.log("GOOGLE SYNC SELECTED CLIENT", { clientId: programClientId, clientName });
+    console.log("GOOGLE SYNC SELECTED CLIENT", { clientId: resolvedClientId, clientName });
     console.log("GOOGLE CALENDAR EVENT SUMMARY", event.summary);
     console.log("GOOGLE CALENDAR EVENT DESCRIPTION", event.description);
     const eventId = item.program.google_event_id || deterministicEventId(userId, item.table, item.program.id, item.program.expiration_date || "");
@@ -539,7 +540,7 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
         });
         errors.push(getCalendarSyncError(item.table, item.program.id, error));
         items.push({
-          clientId: programClientId,
+          clientId: resolvedClientId,
           clientName,
           program: getProgramName(item.program),
           amount: formatProgramAmount(item.program, item.kind),
@@ -675,6 +676,10 @@ function selectPrograms(table: "points_programs" | "miles_programs", userId: str
     .from(table)
     .select("*")
     .eq("user_id", userId);
+
+  if (clientId) {
+    query = query.eq("client_id", clientId);
+  }
 
   return query;
 }
@@ -1206,3 +1211,4 @@ export function sendError(res: ApiResponse, error: unknown) {
 }
 
 export type { ApiRequest, ApiResponse };
+
