@@ -92,6 +92,7 @@ const supportTextClass = "text-[#94A3B8]";
 const inputClass = "rounded border border-[#3B5B82] bg-[#233B5D] text-white placeholder:text-[#B8C7D9] outline-none transition focus:border-[#A855F7] focus:ring-4 focus:ring-[#A855F7]/20";
 const adminEmails = new Set(["ronaldomds10@gmail.com"]);
 const supabaseMigrationFlagKey = "rm-miles-hub-supabase-migrated";
+const googleCalendarUrl = "https://calendar.google.com/calendar/u/0/r";
 
 const airports = [
   { code: "GRU", city: "São Paulo" },
@@ -2003,6 +2004,7 @@ function Dashboard({
   const monthly = useMonthlyCharts(data);
   const [calendarSyncStatus, setCalendarSyncStatus] = useState("");
   const [isCalendarSyncing, setIsCalendarSyncing] = useState(false);
+  const [calendarSyncAction, setCalendarSyncAction] = useState<{ label: string; url: string } | null>(null);
   const currentGoal = data.goals[0];
   const availableGoalMiles = metrics.milesBase;
   const currentGoalRequiredMiles = currentGoal ? normalizeSavedMiles(currentGoal.requiredMiles) : 0;
@@ -2051,14 +2053,17 @@ function Dashboard({
   async function syncGoogleCalendar() {
     if (!accessToken) {
       setCalendarSyncStatus("Faça login novamente para sincronizar.");
+      setCalendarSyncAction(null);
       return;
     }
 
     const controller = new AbortController();
     const timeoutId = window.setTimeout(() => controller.abort(), 30000);
+    const calendarWindow = window.open("about:blank", "_blank", "noopener,noreferrer");
 
     setIsCalendarSyncing(true);
-    setCalendarSyncStatus("");
+    setCalendarSyncStatus("Sincronizando Google Agenda...");
+    setCalendarSyncAction(null);
 
     try {
       const response = await fetch("/api/google/sync-calendar", {
@@ -2071,7 +2076,7 @@ function Dashboard({
         signal: controller.signal,
       });
       const responseText = await response.text();
-      let payload: any = responseText;
+      let payload: any = {};
 
       if (responseText) {
         try {
@@ -2079,12 +2084,11 @@ function Dashboard({
         } catch {
           payload = responseText;
         }
-      } else {
-        payload = {};
       }
 
-      console.log("GOOGLE CALENDAR SYNC RESPONSE", {
+      console.log("GOOGLE CALENDAR SYNC RESPONSE:", {
         status: response.status,
+        responseText,
         ok: typeof payload === "object" && payload !== null ? payload.ok : undefined,
         connected: typeof payload === "object" && payload !== null ? payload.connected : undefined,
         eligibleCount: typeof payload === "object" && payload !== null ? payload.eligibleCount : undefined,
@@ -2097,28 +2101,75 @@ function Dashboard({
         body: payload,
       });
 
-      if ((response.status === 409 || payload.code === "needs_google_connection") && payload.authUrl) {
-        window.location.href = payload.authUrl;
+      const payloadOk = typeof payload === "object" && payload !== null ? payload.ok === true : false;
+      const payloadConnected = typeof payload === "object" && payload !== null ? payload.connected : undefined;
+      const authUrl = typeof payload === "object" && payload !== null ? payload.authUrl : undefined;
+      const connectUrl = typeof payload === "object" && payload !== null ? payload.connectUrl : undefined;
+      const needsGoogleConnection = response.status === 401 || payload.code === "needs_google_connection" || payloadConnected === false;
+
+      if (needsGoogleConnection) {
+        const connectionMessage = "Sua conta Google não está conectada. Conecte sua conta para sincronizar.";
+        console.error("[google-sync] connection missing", {
+          status: response.status,
+          payload,
+          responseText,
+        });
+        setCalendarSyncStatus(connectionMessage);
+        setCalendarSyncAction(
+          typeof authUrl === "string" && authUrl
+            ? { label: "Conectar conta Google", url: authUrl }
+            : typeof connectUrl === "string" && connectUrl
+              ? { label: "Conectar conta Google", url: connectUrl }
+              : null,
+        );
+        if (calendarWindow && !calendarWindow.closed) {
+          calendarWindow.close();
+        }
         return;
       }
 
-      if (!response.ok) {
+      if (!response.ok || payloadOk === false) {
         const message = typeof payload === "string"
           ? payload
           : payload.error || payload.message || payload.details?.message || "Não foi possível sincronizar Google Agenda.";
+        console.error("[google-sync] sync failed", {
+          status: response.status,
+          payload,
+          responseText,
+          message,
+        });
         throw new Error(message);
       }
 
       const createdCount = Number(payload.createdCount ?? 0);
       const updatedCount = Number(payload.updatedCount ?? 0);
       const recreatedCount = Number(payload.recreatedCount ?? 0);
+      const googleEventExistsCount = Number(payload.googleEventExistsCount ?? 0);
+      const successMessage =
+        createdCount === 0 && updatedCount === 0 && recreatedCount === 0 && googleEventExistsCount > 0
+          ? "Tudo certo! Os vencimentos elegíveis já estavam no Google Agenda."
+          : `Google Agenda sincronizado: ${createdCount} criados, ${updatedCount} atualizados, ${recreatedCount} recriados.`;
 
-      setCalendarSyncStatus(`Google Agenda sincronizado: ${createdCount} criados, ${updatedCount} atualizados, ${recreatedCount} recriados.`);
+      setCalendarSyncStatus(successMessage);
+      setCalendarSyncAction({ label: "Abrir Google Agenda", url: googleCalendarUrl });
+
+      if (calendarWindow && !calendarWindow.closed) {
+        calendarWindow.location.href = googleCalendarUrl;
+      }
     } catch (error) {
+      console.error("[google-sync] sync exception", error);
       if (error instanceof DOMException && error.name === "AbortError") {
         setCalendarSyncStatus("A sincronização demorou mais de 30 segundos. Tente novamente em instantes.");
+        setCalendarSyncAction(null);
+        if (calendarWindow && !calendarWindow.closed) {
+          calendarWindow.close();
+        }
       } else {
         setCalendarSyncStatus(error instanceof Error ? error.message : "Não foi possível sincronizar Google Agenda.");
+        setCalendarSyncAction(null);
+        if (calendarWindow && !calendarWindow.closed) {
+          calendarWindow.close();
+        }
       }
     } finally {
       window.clearTimeout(timeoutId);
@@ -2239,15 +2290,27 @@ function Dashboard({
             </div>
             <p className={"mt-1 text-sm " + mutedTextClass}>Programas de pontos e milhas com validade em até 2 anos.</p>
           </div>
-          <button
-            type="button"
-            onClick={syncGoogleCalendar}
-            disabled={isCalendarSyncing}
-            className="inline-flex min-h-11 items-center justify-center gap-2 rounded border border-[#FF5A00]/70 bg-[#FF5A00] px-4 text-sm font-semibold text-white transition hover:bg-[#E65000] disabled:cursor-not-allowed disabled:opacity-70"
-          >
-            <CalendarClock size={16} />
-            <span>{isCalendarSyncing ? "Sincronizando..." : "Sincronizar Google Agenda"}</span>
-          </button>
+          <div className="flex flex-col items-start gap-2">
+            <button
+              type="button"
+              onClick={syncGoogleCalendar}
+              disabled={isCalendarSyncing}
+              className="inline-flex min-h-11 items-center justify-center gap-2 rounded border border-[#FF5A00]/70 bg-[#FF5A00] px-4 text-sm font-semibold text-white transition hover:bg-[#E65000] disabled:cursor-not-allowed disabled:opacity-70"
+            >
+              <CalendarClock size={16} />
+              <span>{isCalendarSyncing ? "Sincronizando..." : "Sincronizar com Google Agenda"}</span>
+            </button>
+            {calendarSyncAction && (
+              <a
+                href={calendarSyncAction.url}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-2 text-sm font-semibold text-[#A855F7] transition hover:text-[#C084FC] hover:underline"
+              >
+                {calendarSyncAction.label}
+              </a>
+            )}
+          </div>
         </div>
         {calendarSyncStatus && <p className={"mt-3 text-sm " + mutedTextClass}>{calendarSyncStatus}</p>}
 
