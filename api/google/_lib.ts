@@ -64,6 +64,53 @@ type SyncItemSummary = {
   googleEventIdPresent: boolean;
 };
 
+type GoogleCalendarEventPayload = {
+  summary: string;
+  description: string;
+  start: { date: string };
+  end: { date: string };
+};
+
+type GoogleCalendarEventSnapshot = {
+  id?: string;
+  status?: string;
+  summary?: string;
+  htmlLink?: string;
+  start?: { date?: string; dateTime?: string };
+  end?: { date?: string; dateTime?: string };
+};
+
+type GoogleCalendarItemResult = {
+  program: string;
+  amount: string;
+  type: "Pontos" | "Milhas";
+  expiration_date: string | null;
+  action: "created" | "updated" | "recreated" | "failed";
+  calendarId: string;
+  googleEventId: string | null;
+  googleHtmlLink: string | null;
+  googleSummary: string | null;
+  googleStart: GoogleCalendarEventSnapshot["start"] | null;
+  googleEnd: GoogleCalendarEventSnapshot["end"] | null;
+  verified: boolean;
+  error?: string | null;
+};
+
+type GoogleCalendarSyncResult = {
+  ok: boolean;
+  partial: boolean;
+  connected: boolean;
+  eligibleCount: number;
+  createdCount: number;
+  updatedCount: number;
+  recreatedCount: number;
+  googleEventExistsCount: number;
+  skippedCount: number;
+  skippedByReason: SkippedByReason;
+  items: GoogleCalendarItemResult[];
+  errors: CalendarSyncError[];
+};
+
 const calendarScope = process.env.GOOGLE_CALENDAR_SCOPES || "https://www.googleapis.com/auth/calendar.events";
 const fallbackAppUrl = "https://gestao-lilac.vercel.app";
 const googleSyncEnvNames = [
@@ -311,9 +358,11 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
   const refreshed = await refreshAccessToken(connection);
   await updateConnectionAccessToken(connection, refreshed.access_token, refreshed.expires_in);
   const skippedByReason = createSkippedByReason();
-  const items: SyncItemSummary[] = [];
+  const items: GoogleCalendarItemResult[] = [];
 
   const supabase = getSupabaseAdmin();
+  const calendarId = connection.calendar_id || "primary";
+  console.log("GOOGLE CALENDAR CALENDAR_ID", calendarId);
   const [pointsResult, milesResult, clientsResult] = await Promise.all([
     selectPrograms("points_programs", userId, clientId),
     selectPrograms("miles_programs", userId, clientId),
@@ -344,7 +393,7 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
 
   for (const item of candidates) {
     const programName = getProgramName(item.program);
-    const skipReason = getEligibilitySkipReason(item.program, connection.calendar_id);
+    const skipReason = getEligibilitySkipReason(item.program, calendarId);
 
     console.log("[google-sync] eligible item check", {
       type: item.type,
@@ -357,7 +406,6 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
 
     if (skipReason) {
       skippedByReason[skipReason] += 1;
-      items.push(getSyncItemSummary(item, "skipped"));
       continue;
     }
 
@@ -378,9 +426,9 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
   const errors: CalendarSyncError[] = [];
 
   for (const item of expirations) {
+    const event = buildCalendarEvent(item.kind, item.program, client);
+    const eventId = item.program.google_event_id || deterministicEventId(userId, item.table, item.program.id, item.program.expiration_date || "");
     try {
-      const event = buildCalendarEvent(item.kind, item.program, client);
-      const eventId = item.program.google_event_id || deterministicEventId(userId, item.table, item.program.id, item.program.expiration_date || "");
       if (item.program.google_event_id) {
         googleEventExistsCount += 1;
       }
@@ -397,12 +445,16 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
       });
       const result = await upsertGoogleEvent(
         refreshed.access_token,
-        connection.calendar_id,
+        calendarId,
         eventId,
         event,
         Boolean(item.program.google_event_id),
         () => clearProgramGoogleEventId(supabase, item.table, item.program.id, userId),
       );
+
+      if (result.action === "created") createdCount += 1;
+      if (result.action === "updated") updatedCount += 1;
+      if (result.action === "recreated") recreatedCount += 1;
 
       const { error } = await supabase
         .from(item.table)
@@ -417,7 +469,6 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
       if (error) {
         logGoogleSyncSupabaseError("update_program_google_event_id", error);
         skippedByReason.metadata_update_failed += 1;
-        items.push(getSyncItemSummary(item, "skipped"));
         console.log("[google-sync] eligible item skipped", {
           type: item.type,
           program: getProgramName(item.program),
@@ -427,15 +478,41 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
           skipReason: "metadata_update_failed",
         });
         errors.push(getCalendarSyncError(item.table, item.program.id, error));
+        items.push({
+          program: getProgramName(item.program),
+          amount: formatProgramAmount(item.program, item.kind),
+          type: item.kind,
+          expiration_date: item.program.expiration_date,
+          action: result.action,
+          calendarId,
+          googleEventId: result.event.id || result.eventId,
+          googleHtmlLink: result.event.htmlLink || null,
+          googleSummary: result.event.summary || event.summary,
+          googleStart: result.event.start || event.start,
+          googleEnd: result.event.end || event.end,
+          verified: true,
+          error: error instanceof Error ? error.message : "Não foi possível salvar o vínculo do evento no Supabase.",
+        });
         continue;
       }
-      if (result.action === "created") createdCount += 1;
-      if (result.action === "updated") updatedCount += 1;
-      if (result.action === "recreated") recreatedCount += 1;
-      items.push(getSyncItemSummary(item, result.action));
+
+      items.push({
+        program: getProgramName(item.program),
+        amount: formatProgramAmount(item.program, item.kind),
+        type: item.kind,
+        expiration_date: item.program.expiration_date,
+        action: result.action,
+        calendarId,
+        googleEventId: result.event.id || result.eventId,
+        googleHtmlLink: result.event.htmlLink || null,
+        googleSummary: result.event.summary || event.summary,
+        googleStart: result.event.start || event.start,
+        googleEnd: result.event.end || event.end,
+        verified: true,
+        error: null,
+      });
     } catch (error) {
       skippedByReason.google_upsert_failed += 1;
-      items.push(getSyncItemSummary(item, "skipped"));
       console.log("[google-sync] eligible item skipped", {
         type: item.type,
         program: getProgramName(item.program),
@@ -445,11 +522,32 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
         skipReason: "google_upsert_failed",
         error: getSafeErrorDetails(error),
       });
+      items.push({
+        program: getProgramName(item.program),
+        amount: formatProgramAmount(item.program, item.kind),
+        type: item.kind,
+        expiration_date: item.program.expiration_date,
+        action: "failed",
+        calendarId,
+        googleEventId: eventId,
+        googleHtmlLink: null,
+        googleSummary: event.summary,
+        googleStart: event.start,
+        googleEnd: event.end,
+        verified: false,
+        error: error instanceof Error ? error.message : "Não foi possível sincronizar evento no Google Agenda.",
+      });
       errors.push(getCalendarSyncError(item.table, item.program.id, error));
     }
   }
 
+  const verifiedCount = items.filter((item) => item.verified).length;
+  const successfulCount = createdCount + updatedCount + recreatedCount;
+  const partial = errors.length > 0 || items.some((item) => item.action === "failed");
+  const ok = successfulCount > 0 && verifiedCount === successfulCount && !partial;
   const result = {
+    ok,
+    partial,
     connected: true,
     eligibleCount: expirations.length,
     createdCount,
@@ -463,6 +561,8 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
   };
 
   console.log("[google-sync] resultado", {
+    ok: result.ok,
+    partial: result.partial,
     userId,
     eligibleCount: result.eligibleCount,
     createdCount: result.createdCount,
@@ -542,6 +642,10 @@ function formatProgramBalance(program: ProgramRow) {
   return Math.round(Number(program.balance ?? 0)).toLocaleString("pt-BR");
 }
 
+function formatProgramAmount(program: ProgramRow, kind: "Pontos" | "Milhas") {
+  return `${formatProgramBalance(program)} ${kind.toLowerCase()}`;
+}
+
 function formatCurrencyBRL(value: number) {
   return new Intl.NumberFormat("pt-BR", {
     style: "currency",
@@ -586,18 +690,18 @@ function isValidLocalDate(date: string) {
     && parsed.getDate() === day;
 }
 
-function buildCalendarEvent(kind: "Pontos" | "Milhas", program: ProgramRow, client: { name?: string | null; email?: string | null } | null) {
+function buildCalendarEvent(kind: "Pontos" | "Milhas", program: ProgramRow, client: { name?: string | null; email?: string | null } | null): GoogleCalendarEventPayload {
   const programName = getProgramName(program);
   const expirationDate = program.expiration_date || "";
   const daysRemaining = getDaysRemaining(expirationDate);
-  const balance = formatProgramBalance(program);
+  const amount = formatProgramAmount(program, kind);
   const typeLabel = getProgramTypeLabel(kind);
   const statusLabel = getDaysLabel(daysRemaining);
   const estimatedValue = Number(program.balance ?? 0) * Number(program.cpm ?? 0);
   const clientName = client?.name || client?.email || "";
   const descriptionLines = [
     `Programa: ${programName}`,
-    `Quantidade: ${balance} ${kind.toLowerCase()}`,
+    `Quantidade: ${amount}`,
     `Tipo: ${typeLabel}`,
     `Vencimento: ${formatPtBrDate(expirationDate)}`,
     `Status: ${statusLabel}`,
@@ -608,7 +712,7 @@ function buildCalendarEvent(kind: "Pontos" | "Milhas", program: ProgramRow, clie
   ].filter(Boolean);
 
   return {
-    summary: `Vencimento: ${programName} - ${balance} ${kind.toLowerCase()}`,
+    summary: `Vencimento: ${programName} - ${amount}`,
     description: descriptionLines.join("\n"),
     start: { date: expirationDate },
     end: { date: addDays(expirationDate, 1) },
@@ -619,53 +723,134 @@ async function upsertGoogleEvent(
   accessToken: string,
   calendarId: string,
   eventId: string,
-  event: unknown,
+  event: GoogleCalendarEventPayload,
   preferUpdate: boolean,
   clearStoredEventId: () => Promise<void>,
-): Promise<{ eventId: string; action: "created" | "updated" | "recreated" }> {
+): Promise<{ eventId: string; action: "created" | "updated" | "recreated"; event: GoogleCalendarEventSnapshot }> {
+  console.log("GOOGLE CALENDAR CALENDAR_ID", calendarId);
   console.log("GOOGLE CALENDAR EVENT PAYLOAD", event);
+
   if (preferUpdate) {
     const updateResponse = await callGoogleCalendar("PUT", calendarId, eventId, accessToken, event);
-    if (updateResponse.ok) return { eventId, action: "updated" as const };
+    const updateSnapshot = await readGoogleCalendarResponse("GOOGLE CALENDAR UPDATE RESPONSE", updateResponse);
 
-    if (updateResponse.status === 404) {
+    if (updateSnapshot.status === 404) {
       await clearStoredEventId();
-      const recreatedEventId = createReplacementEventId(eventId);
-      const recreated = await insertGoogleEvent(accessToken, calendarId, recreatedEventId, event);
-      return { eventId: recreated.eventId, action: "recreated" as const };
+      return await recreateGoogleEvent(accessToken, calendarId, eventId, event);
     }
 
-    return await throwGoogleError(updateResponse);
+    if (!updateSnapshot.ok) {
+      return await throwGoogleErrorFromSnapshot(updateSnapshot);
+    }
+
+    const verification = await verifyGoogleEvent(accessToken, calendarId, getSnapshotEventId(updateSnapshot.body, eventId));
+    if (verification.status === 404) {
+      await clearStoredEventId();
+      return await recreateGoogleEvent(accessToken, calendarId, eventId, event);
+    }
+
+    if (!isValidGoogleEventSnapshot(verification.body, event)) {
+      console.error("[google-sync] evento atualizado invalido", {
+        calendarId,
+        eventId,
+        updateSnapshot,
+        verification,
+      });
+      throw new ApiError(500, "O evento atualizado não foi confirmado no Google Agenda.", {
+        updateResponse: updateSnapshot,
+        verifyResponse: verification,
+      });
+    }
+
+    return { eventId: getSnapshotEventId(verification.body, eventId), action: "updated" as const, event: verification.body as GoogleCalendarEventSnapshot };
   }
 
-  return await insertGoogleEvent(accessToken, calendarId, eventId, event);
+  const createResponse = await insertGoogleEvent(accessToken, calendarId, eventId, event);
+  if (createResponse.status === 409) {
+    const updateResponse = await callGoogleCalendar("PUT", calendarId, eventId, accessToken, event);
+    const updateSnapshot = await readGoogleCalendarResponse("GOOGLE CALENDAR UPDATE RESPONSE", updateResponse);
+
+    if (!updateSnapshot.ok) {
+      return await throwGoogleErrorFromSnapshot(updateSnapshot);
+    }
+
+    const verification = await verifyGoogleEvent(accessToken, calendarId, getSnapshotEventId(updateSnapshot.body, eventId));
+    if (!isValidGoogleEventSnapshot(verification.body, event)) {
+      console.error("[google-sync] evento atualizado invalido", {
+        calendarId,
+        eventId,
+        updateSnapshot,
+        verification,
+      });
+      throw new ApiError(500, "O evento atualizado não foi confirmado no Google Agenda.", {
+        updateResponse: updateSnapshot,
+        verifyResponse: verification,
+      });
+    }
+
+    return { eventId: getSnapshotEventId(verification.body, eventId), action: "updated" as const, event: verification.body as GoogleCalendarEventSnapshot };
+  }
+
+  if (!createResponse.ok) {
+    return await throwGoogleErrorFromSnapshot(createResponse);
+  }
+
+  const createVerification = await verifyGoogleEvent(accessToken, calendarId, getSnapshotEventId(createResponse.body, eventId));
+  if (!isValidGoogleEventSnapshot(createVerification.body, event)) {
+    console.error("[google-sync] evento criado invalido", {
+      calendarId,
+      eventId,
+      createResponse,
+      createVerification,
+    });
+    throw new ApiError(500, "O evento criado não foi confirmado no Google Agenda.", {
+      createResponse,
+      verifyResponse: createVerification,
+    });
+  }
+
+  return { eventId: getSnapshotEventId(createVerification.body, eventId), action: "created" as const, event: createVerification.body as GoogleCalendarEventSnapshot };
 }
 
-async function insertGoogleEvent(accessToken: string, calendarId: string, eventId: string, event: unknown): Promise<{ eventId: string; action: "created" | "updated" }> {
-  const insertResponse = await fetch(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`, {
+async function recreateGoogleEvent(accessToken: string, calendarId: string, eventId: string, event: GoogleCalendarEventPayload): Promise<{ eventId: string; action: "recreated"; event: GoogleCalendarEventSnapshot }> {
+  const recreatedEventId = createReplacementEventId(eventId);
+  const createResponse = await insertGoogleEvent(accessToken, calendarId, recreatedEventId, event);
+  if (!createResponse.ok) {
+    return await throwGoogleErrorFromSnapshot(createResponse);
+  }
+
+  const verification = await verifyGoogleEvent(accessToken, calendarId, getSnapshotEventId(createResponse.body, recreatedEventId));
+  if (!isValidGoogleEventSnapshot(verification.body, event)) {
+    console.error("[google-sync] evento recriado invalido", {
+      calendarId,
+      eventId: recreatedEventId,
+      createResponse,
+      verification,
+    });
+    throw new ApiError(500, "O evento recriado não foi confirmado no Google Agenda.", {
+      createResponse,
+      verifyResponse: verification,
+    });
+  }
+
+  return { eventId: getSnapshotEventId(verification.body, recreatedEventId), action: "recreated" as const, event: verification.body as GoogleCalendarEventSnapshot };
+}
+
+async function insertGoogleEvent(accessToken: string, calendarId: string, eventId: string, event: GoogleCalendarEventPayload) {
+  const response = await fetch(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${accessToken}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ id: eventId, ...(event as Record<string, unknown>) }),
+    body: JSON.stringify({ id: eventId, ...event }),
   });
 
-  if (insertResponse.ok) {
-    const payload = await insertResponse.json();
-    return { eventId: payload.id || eventId, action: "created" as const };
-  }
-
-  if (insertResponse.status === 409) {
-    const updateResponse = await callGoogleCalendar("PUT", calendarId, eventId, accessToken, event);
-    if (updateResponse.ok) return { eventId, action: "updated" as const };
-    return await throwGoogleError(updateResponse);
-  }
-
-  return await throwGoogleError(insertResponse);
+  const snapshot = await readGoogleCalendarResponse("GOOGLE CALENDAR CREATE RESPONSE", response);
+  return snapshot;
 }
 
-function callGoogleCalendar(method: "PUT", calendarId: string, eventId: string, accessToken: string, event: unknown) {
+function callGoogleCalendar(method: "PUT", calendarId: string, eventId: string, accessToken: string, event: GoogleCalendarEventPayload) {
   return fetch(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`, {
     method,
     headers: {
@@ -676,10 +861,72 @@ function callGoogleCalendar(method: "PUT", calendarId: string, eventId: string, 
   });
 }
 
-async function throwGoogleError(response: Response): Promise<never> {
-  const payload = await response.json().catch(() => null);
+async function verifyGoogleEvent(accessToken: string, calendarId: string, eventId: string) {
+  const response = await fetch(`https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+
+  const snapshot = await readGoogleCalendarResponse("GOOGLE CALENDAR VERIFY RESPONSE", response);
+  return snapshot;
+}
+
+async function readGoogleCalendarResponse(label: string, response: Response) {
+  const rawText = await response.text();
+  let body: GoogleCalendarEventSnapshot | Record<string, unknown> | string | null = null;
+
+  if (rawText) {
+    try {
+      body = JSON.parse(rawText) as GoogleCalendarEventSnapshot;
+    } catch {
+      body = rawText;
+    }
+  }
+
+  const snapshot = {
+    ok: response.ok,
+    status: response.status,
+    body,
+    rawText,
+  };
+
+  console.log(label, snapshot);
+  return snapshot;
+}
+
+function isValidGoogleEventSnapshot(body: GoogleCalendarEventSnapshot | Record<string, unknown> | string | null, event: GoogleCalendarEventPayload) {
+  if (!body || typeof body !== "object") return false;
+
+  const record = body as GoogleCalendarEventSnapshot;
+  return responseEventMatches(record, event)
+    && typeof record.id === "string"
+    && typeof record.status === "string"
+    && typeof record.summary === "string"
+    && typeof record.htmlLink === "string"
+    && record.start !== undefined
+    && record.end !== undefined;
+}
+
+function responseEventMatches(record: GoogleCalendarEventSnapshot, event: GoogleCalendarEventPayload) {
+  return record.summary === event.summary
+    && record.start?.date === event.start.date
+    && record.end?.date === event.end.date;
+}
+
+function getSnapshotEventId(body: GoogleCalendarEventSnapshot | Record<string, unknown> | string | null, fallback: string) {
+  if (!body || typeof body !== "object") return fallback;
+  const record = body as GoogleCalendarEventSnapshot;
+  return typeof record.id === "string" && record.id ? record.id : fallback;
+}
+
+async function throwGoogleErrorFromSnapshot(snapshot: { status: number; body: GoogleCalendarEventSnapshot | Record<string, unknown> | string | null; rawText: string }): Promise<never> {
+  const payload = typeof snapshot.body === "object" && snapshot.body !== null
+    ? snapshot.body
+    : { rawText: snapshot.rawText };
   logGoogleSyncGoogleError("upsert_event", payload);
-  throw new ApiError(response.status, "Não foi possível sincronizar evento no Google Agenda.", payload);
+  throw new ApiError(snapshot.status, "Não foi possível sincronizar evento no Google Agenda.", payload);
 }
 
 function signState(payload: Record<string, unknown>) {

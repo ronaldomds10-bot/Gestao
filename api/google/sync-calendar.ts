@@ -49,7 +49,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
 
     const body = typeof req.body === "object" && req.body !== null ? req.body as { clientId?: string } : {};
     const result = await withTimeout(syncCalendarEvents(user.id, body.clientId, connection), syncTimeoutMs);
-    res.status(200).json({ ok: true, ...result });
+    res.status(200).json(result);
   } catch (error) {
     if (!userIdReceived) {
       console.log("[google-sync] user_id recebido", { sim: false });
@@ -70,6 +70,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
 function createSyncErrorBody(message: string, extras: Record<string, unknown> = {}) {
   return {
     ok: false,
+    partial: false,
     connected: false,
     eligibleCount: 0,
     createdCount: 0,

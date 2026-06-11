@@ -81,6 +81,22 @@ type ProgramFocusRequest = {
   requestId: number;
 };
 
+type GoogleCalendarSyncItem = {
+  program: string;
+  amount: string;
+  type: "Pontos" | "Milhas";
+  expiration_date: string | null;
+  action: "created" | "updated" | "recreated" | "failed";
+  calendarId: string;
+  googleEventId: string | null;
+  googleHtmlLink: string | null;
+  googleSummary: string | null;
+  googleStart: { date?: string; dateTime?: string } | null;
+  googleEnd: { date?: string; dateTime?: string } | null;
+  verified: boolean;
+  error?: string | null;
+};
+
 const rmOrange = "#f97316";
 const chartColors = ["#f97316", "#0f766e", "#2563eb", "#7c3aed", "#eab308", "#64748b"];
 const mileValue = 0.025;
@@ -2005,6 +2021,7 @@ function Dashboard({
   const [calendarSyncStatus, setCalendarSyncStatus] = useState("");
   const [isCalendarSyncing, setIsCalendarSyncing] = useState(false);
   const [calendarSyncAction, setCalendarSyncAction] = useState<{ label: string; url: string } | null>(null);
+  const [calendarSyncItems, setCalendarSyncItems] = useState<GoogleCalendarSyncItem[]>([]);
   const currentGoal = data.goals[0];
   const availableGoalMiles = metrics.milesBase;
   const currentGoalRequiredMiles = currentGoal ? normalizeSavedMiles(currentGoal.requiredMiles) : 0;
@@ -2054,6 +2071,7 @@ function Dashboard({
     if (!accessToken) {
       setCalendarSyncStatus("Faça login novamente para sincronizar.");
       setCalendarSyncAction(null);
+      setCalendarSyncItems([]);
       return;
     }
 
@@ -2065,6 +2083,7 @@ function Dashboard({
     setIsCalendarSyncing(true);
     setCalendarSyncStatus("Sincronizando Google Agenda...");
     setCalendarSyncAction(null);
+    setCalendarSyncItems([]);
 
     try {
       const response = await fetch("/api/google/sync-calendar", {
@@ -2101,6 +2120,14 @@ function Dashboard({
         items: typeof payload === "object" && payload !== null ? payload.items : undefined,
         body: payload,
       });
+
+      if (typeof payload === "object" && payload !== null && Array.isArray(payload.items)) {
+        console.log("GOOGLE CALENDAR SYNC ITEMS", payload.items);
+        console.log("GOOGLE CALENDAR SYNC ITEM LINKS", payload.items.filter((item: GoogleCalendarSyncItem) => Boolean(item.googleHtmlLink)));
+        setCalendarSyncItems(payload.items as GoogleCalendarSyncItem[]);
+      } else {
+        setCalendarSyncItems([]);
+      }
 
       const payloadOk = typeof payload === "object" && payload !== null ? payload.ok === true : false;
       const payloadConnected = typeof payload === "object" && payload !== null ? payload.connected : undefined;
@@ -2139,6 +2166,7 @@ function Dashboard({
           responseText,
           message,
         });
+        setCalendarSyncItems(Array.isArray(payload.items) ? payload.items as GoogleCalendarSyncItem[] : []);
         throw new Error(message);
       }
 
@@ -2313,6 +2341,24 @@ function Dashboard({
               >
                 {calendarSyncAction.label}
               </a>
+            )}
+            {calendarSyncItems.some((item) => item.googleHtmlLink) && (
+              <div className="space-y-2">
+                {calendarSyncItems
+                  .filter((item) => item.googleHtmlLink)
+                  .map((item) => (
+                    <a
+                      key={`${item.program}-${item.expiration_date}-${item.googleEventId}`}
+                      href={item.googleHtmlLink as string}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-2 text-sm font-semibold text-[#10B981] transition hover:text-[#34D399] hover:underline"
+                    >
+                      Abrir evento no Google Agenda
+                      <span className="text-[#CBD5E1]">{" "}{item.program}</span>
+                    </a>
+                  ))}
+              </div>
             )}
           </div>
         </div>
