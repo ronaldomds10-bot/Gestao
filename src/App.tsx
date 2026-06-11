@@ -2290,7 +2290,7 @@ function Dashboard({
         description="Acompanhe seu patrimonio em milhas, economias geradas e metas de viagem em uma unica tela."
       />
 
-      <section className="dashboard-kpi-grid grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+      <section className="dashboard-kpi-grid grid gap-4 md:grid-cols-2 xl:grid-cols-5">
         <button onClick={() => goTo("programs")} className="dashboard-kpi-card group relative overflow-hidden rounded-xl border border-[#1E3A5F] bg-[#0F1F38] p-6 text-left transition hover:border-[#A855F7] hover:shadow-lg hover:shadow-[#A855F7]/10">
           <div className="absolute inset-0 bg-gradient-to-br from-[#A855F7]/0 to-[#A855F7]/0 transition group-hover:from-[#A855F7]/5 group-hover:to-[#A855F7]/10"></div>
           <div className="relative z-10">
@@ -2322,6 +2322,15 @@ function Dashboard({
           </div>
         </button>
 
+        <button onClick={() => goTo("cards")} className="dashboard-kpi-card group relative overflow-hidden rounded-xl border border-[#1E3A5F] bg-[#0F1F38] p-6 text-left transition hover:border-[#3B82F6] hover:shadow-lg hover:shadow-[#3B82F6]/10">
+          <div className="absolute inset-0 bg-gradient-to-br from-blue-500/0 to-blue-500/0 transition group-hover:from-blue-500/5 group-hover:to-blue-500/10"></div>
+          <div className="relative z-10">
+            <p className={"text-sm font-medium " + mutedTextClass}>Limite total dos cartoes</p>
+            <p className="mt-3 text-3xl font-bold text-[#38BDF8]">{currency.format(metrics.totalCardLimit)}</p>
+            <p className={"mt-4 text-sm " + mutedTextClass}>Soma dos limites do cliente selecionado</p>
+          </div>
+        </button>
+
         <button onClick={() => goTo("programs")} className="dashboard-kpi-card group relative overflow-hidden rounded-xl border border-[#1E3A5F] bg-[#0F1F38] p-6 text-left transition hover:border-[#FF5A00] hover:shadow-lg hover:shadow-[#FF5A00]/10">
           <div className="absolute inset-0 bg-gradient-to-br from-yellow-500/0 to-yellow-500/0 group-hover:from-yellow-500/5 group-hover:to-yellow-500/10 transition"></div>
           <div className="relative z-10">
@@ -2344,6 +2353,38 @@ function Dashboard({
             <p className="mt-3 text-sm font-semibold text-[#CBD5E1]">{goalProgress}% concluido</p>
           </div>
         </button>
+      </section>
+
+      <section className={panelClass + " p-5"}>
+        <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
+          <div>
+            <h2 className="text-lg font-semibold">Limites de Cartoes</h2>
+            <p className={"mt-1 text-sm " + mutedTextClass}>Cartoes cadastrados para o cliente selecionado.</p>
+          </div>
+          <div className="rounded-lg border border-[#1E3A5F] bg-[#233B5D] px-4 py-3 text-right">
+            <p className={"text-xs font-semibold uppercase " + supportTextClass}>Total dos limites</p>
+            <p className="mt-1 text-xl font-bold text-[#38BDF8]">{currency.format(metrics.totalCardLimit)}</p>
+          </div>
+        </div>
+        <div className="mt-5">
+          <DataTable headers={["Banco", "Cartao", "Limite", "Dia de vencimento"]}>
+            {data.cards.length === 0 ? (
+              <tr>
+                <Td>Nenhum cartao cadastrado</Td>
+                <Td>-</Td>
+                <Td>{currency.format(0)}</Td>
+                <Td>-</Td>
+              </tr>
+            ) : data.cards.map((card) => (
+              <tr key={card.id}>
+                <Td>{card.bank}</Td>
+                <Td>{card.cardName}</Td>
+                <Td>{currency.format(card.limitValue)}</Td>
+                <Td>Dia {card.dueDay}</Td>
+              </tr>
+            ))}
+          </DataTable>
+        </div>
       </section>
 
       <section className="expiration-card rounded-lg border border-[#1E3A5F] bg-[#0F1F38] p-5 text-white shadow">
@@ -3924,10 +3965,11 @@ function useMetrics(data: AppData) {
     const totalMilesBase = data.milesPrograms.reduce((sum, program) => sum + getAirlineBalance(data, program), 0);
     const milesWithBonus = totalMilesBase;
 
-    // Calcular pontos
-    const cardPoints = data.cards.reduce((sum, card) => sum + card.pointsBalance, 0);
+    // Pontos de cartoes sao informativos e nao entram no patrimonio principal.
+    const totalCardPoints = data.cards.reduce((sum, card) => sum + card.pointsBalance, 0);
+    const totalCardLimit = data.cards.reduce((sum, card) => sum + card.limitValue, 0);
     const pointsProgramsBalance = data.pointsPrograms.reduce((sum, program) => sum + getBankAvailableBalance(data, program), 0);
-    const totalPoints = cardPoints + pointsProgramsBalance;
+    const totalPoints = pointsProgramsBalance;
 
     const totalMiles = milesWithBonus + totalPoints;
     const totalEconomy = data.redemptions.reduce((sum, redemption) => sum + getRedemptionCosts(redemption).economy, 0);
@@ -3937,6 +3979,8 @@ function useMetrics(data: AppData) {
       milesBase: totalMilesBase,
       milesWithBonus,
       totalPoints,
+      totalCardPoints,
+      totalCardLimit,
       estimatedValue: totalMiles * mileValue,
       totalEconomy,
       yearMiles: milesWithBonus,

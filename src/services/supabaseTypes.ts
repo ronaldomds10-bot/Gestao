@@ -27,14 +27,21 @@ export type ClientRow = {
 export type CreditCardRow = {
   id: string;
   user_id: string;
+  client_id: string | null;
+  local_id: string | null;
+  external_id: string | null;
   name: string;
+  card_name: string | null;
   bank: string;
   brand: string | null;
   last_four: string | null;
   closing_day: number | null;
   due_day: number;
   annual_fee: number | null;
+  limit_value: number | null;
+  points_balance: number | null;
   points_multiplier: number | null;
+  points_per_dollar: number | null;
   created_at: string;
   updated_at: string;
 };
