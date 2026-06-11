@@ -2099,8 +2099,6 @@ function Dashboard({
     setCalendarSyncStatus("Sincronizando Google Agenda...");
     setCalendarSyncAction(null);
     setCalendarSyncItems([]);
-    const selectedProfileName = data.profile?.name?.trim() || "";
-
     try {
       const response = await fetch("/api/google/sync-calendar", {
         method: "POST",
@@ -2200,16 +2198,20 @@ function Dashboard({
       const recreatedCount = Number(payload.recreatedCount ?? 0);
       const googleEventExistsCount = Number(payload.googleEventExistsCount ?? 0);
       const payloadItems = Array.isArray(payload.items) ? payload.items as GoogleCalendarSyncItem[] : [];
-      const payloadClientName = payloadItems.find((item) => item.clientName && item.clientName !== "Não identificado")?.clientName || "";
-      const syncClientName = selectedProfileName || payloadClientName;
-      const hasSummaryWithoutClient = payloadItems.some((item) => item.googleSummary && syncClientName && !item.googleSummary.includes(syncClientName));
+      const uniqueClientNames = [...new Set(payloadItems.map((item) => item.clientName).filter((value) => value && value !== "Não identificado"))];
+      const syncScopeLabel = uniqueClientNames.length > 1
+        ? "todos os perfis"
+        : uniqueClientNames[0] || "";
+      const hasSummaryWithoutClient = payloadItems.some(
+        (item) => item.googleSummary && item.clientName && item.clientName !== "Não identificado" && !item.googleSummary.includes(item.clientName),
+      );
       const successMessage =
         payload.eligibleCount === 0
           ? "Nenhum vencimento elegível para sincronizar neste perfil."
           : createdCount === 0 && updatedCount === 0 && recreatedCount === 0 && googleEventExistsCount > 0
           ? "Tudo certo! Os vencimentos elegíveis já estavam no Google Agenda."
-          : syncClientName
-          ? `Google Agenda sincronizado para ${syncClientName}: ${createdCount} criados, ${updatedCount} atualizados, ${recreatedCount} recriados.`
+          : syncScopeLabel
+          ? `Google Agenda sincronizado para ${syncScopeLabel}: ${createdCount} criados, ${updatedCount} atualizados, ${recreatedCount} recriados.`
           : `Google Agenda sincronizado: ${createdCount} criados, ${updatedCount} atualizados, ${recreatedCount} recriados.`;
 
       console.log("sync success:", payload);
