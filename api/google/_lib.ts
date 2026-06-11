@@ -32,6 +32,7 @@ type ProgramRow = {
   program_name?: string | null;
   airline?: string | null;
   balance: number | null;
+  cpm?: number | null;
   expiration_date: string | null;
   calendar_sync_enabled?: boolean | null;
   google_event_id: string | null;
@@ -478,8 +479,8 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
 function selectPrograms(table: "points_programs" | "miles_programs", userId: string, clientId?: string) {
   const supabase = getSupabaseAdmin();
   const columns = table === "points_programs"
-    ? "id,user_id,client_id,program_name,balance,expiration_date,calendar_sync_enabled,google_event_id"
-    : "id,user_id,client_id,airline,balance,expiration_date,calendar_sync_enabled,google_event_id";
+    ? "id,user_id,client_id,program_name,balance,cpm,expiration_date,calendar_sync_enabled,google_event_id"
+    : "id,user_id,client_id,airline,balance,cpm,expiration_date,calendar_sync_enabled,google_event_id";
   let query = supabase
     .from(table)
     .select(columns)
@@ -533,6 +534,22 @@ function getProgramName(program: ProgramRow) {
   return program.program_name || program.airline || program.name || "Programa";
 }
 
+function getProgramTypeLabel(kind: "Pontos" | "Milhas") {
+  return kind === "Pontos" ? "Pontos" : "Milhas";
+}
+
+function formatProgramBalance(program: ProgramRow) {
+  return Math.round(Number(program.balance ?? 0)).toLocaleString("pt-BR");
+}
+
+function formatCurrencyBRL(value: number) {
+  return new Intl.NumberFormat("pt-BR", {
+    style: "currency",
+    currency: "BRL",
+    maximumFractionDigits: 2,
+  }).format(value);
+}
+
 async function clearProgramGoogleEventId(
   supabase: ReturnType<typeof getSupabaseAdmin>,
   table: "points_programs" | "miles_programs",
@@ -572,22 +589,29 @@ function isValidLocalDate(date: string) {
 function buildCalendarEvent(kind: "Pontos" | "Milhas", program: ProgramRow, client: { name?: string | null; email?: string | null } | null) {
   const programName = getProgramName(program);
   const expirationDate = program.expiration_date || "";
-  const eventDate = addDays(expirationDate, -30);
-  const eventEndDate = addDays(eventDate, 1);
   const daysRemaining = getDaysRemaining(expirationDate);
+  const balance = formatProgramBalance(program);
+  const typeLabel = getProgramTypeLabel(kind);
+  const statusLabel = getDaysLabel(daysRemaining);
+  const estimatedValue = Number(program.balance ?? 0) * Number(program.cpm ?? 0);
+  const clientName = client?.name || client?.email || "";
+  const descriptionLines = [
+    `Programa: ${programName}`,
+    `Quantidade: ${balance} ${kind.toLowerCase()}`,
+    `Tipo: ${typeLabel}`,
+    `Vencimento: ${formatPtBrDate(expirationDate)}`,
+    `Status: ${statusLabel}`,
+    clientName ? `Cliente: ${clientName}` : "",
+    `Valor estimado: ${formatCurrencyBRL(estimatedValue)}`,
+    "",
+    "Atenção: estes pontos/milhas estão próximos do vencimento. Verifique possibilidade de uso, transferência, renovação ou emissão antes da data final.",
+  ].filter(Boolean);
 
   return {
-    summary: `⚠️ Vencimento de pontos/milhas - ${programName}`,
-    description: [
-      `Cliente: ${client?.name || client?.email || "-"}`,
-      `Tipo: ${kind}`,
-      `Programa: ${programName}`,
-      `Saldo: ${Math.round(Number(program.balance ?? 0)).toLocaleString("pt-BR")}`,
-      `Data de vencimento: ${formatPtBrDate(expirationDate)}`,
-      `Dias restantes: ${getDaysLabel(daysRemaining)}`,
-    ].join("\n"),
-    start: { date: eventDate },
-    end: { date: eventEndDate },
+    summary: `Vencimento: ${programName} - ${balance} ${kind.toLowerCase()}`,
+    description: descriptionLines.join("\n"),
+    start: { date: expirationDate },
+    end: { date: addDays(expirationDate, 1) },
   };
 }
 
