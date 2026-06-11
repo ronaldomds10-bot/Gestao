@@ -439,6 +439,7 @@ async function syncAllCalendarProfiles(userId: string, connection: GoogleConnect
   for (const client of clients as Array<Record<string, unknown>>) {
     const profileId = String(client.id);
     const profileName = typeof client.name === "string" && client.name.trim() ? client.name.trim() : "Cliente";
+    console.log("SYNC PROFILE LOOP", profileName, profileId);
     const result = await syncSingleCalendarProfile(userId, { profileId, profileName }, connection);
 
     profiles.push({
@@ -859,7 +860,6 @@ function getSyncItemSummary(
 function getEligibilitySkipReason(program: ProgramRow, calendarId: string | null | undefined): SkipReason | null {
   if (!program.expiration_date) return "no_expiration_date";
   if (!isValidLocalDate(program.expiration_date)) return "invalid_date";
-  if (program.calendar_sync_enabled === false) return "sync_disabled";
   if (!calendarId) return "missing_calendar_id";
   return null;
 }
