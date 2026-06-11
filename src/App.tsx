@@ -2093,6 +2093,7 @@ function Dashboard({
     const selectedClient = data;
     const selectedProfileName = data.profile?.name?.trim() || "";
     console.log("calendarWindow aberto:", !!calendarWindow);
+    console.log("PERFIL SELECIONADO PARA SYNC", selectedClientId);
     console.log("sync clientId", selectedClientId);
     console.log("[google-sync] selectedClient:", selectedClient);
 

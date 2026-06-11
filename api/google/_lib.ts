@@ -409,14 +409,15 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
     ]),
   );
   const selectedClient = clientId
-    ? clientMap.get(clientId)
-      ?? [...clientMap.values()].find((client) => client.localId === clientId)
-      ?? null
+    ? clientMap.get(clientId) ?? null
     : null;
   const selectedClientName = resolveClientName(selectedClient);
   console.log("GOOGLE SYNC SELECTED CLIENT", { clientId: clientId ?? null, clientName: selectedClientName });
   console.log("[google-sync] clientId:", clientId ?? null);
   console.log("[google-sync] clientName:", selectedClientName);
+  if (!selectedClient) {
+    throw new ApiError(400, "Cliente/perfil selecionado não encontrado.", { clientId });
+  }
 
   const [pointsResult, milesResult] = await Promise.all([
     selectPrograms("points_programs", userId, clientId),
@@ -474,12 +475,7 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
 
   for (const item of expirations) {
     const programClientId = item.program.client_id ?? clientId ?? null;
-    const programClient = programClientId
-      ? clientMap.get(programClientId)
-        ?? [...clientMap.values()].find((client) => client.localId === programClientId)
-        ?? null
-      : null;
-    const clientName = resolveClientName(programClient ?? selectedClient);
+    const clientName = selectedClientName;
     const resolvedClientId = programClientId ?? clientId ?? null;
     if (clientName === "Não identificado") {
       console.warn("[google-sync] clientName não encontrado", { clientId: resolvedClientId, item });
