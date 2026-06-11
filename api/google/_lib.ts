@@ -397,17 +397,22 @@ export async function syncCalendarEvents(userId: string, clientId: string | unde
     throw new ApiError(500, "Não foi possível carregar clientes.", clientsResult.error);
   }
 
-  const clientMap = new Map<string, { id: string; name?: string | null; email?: string | null }>(
+  const clientMap = new Map<string, { id: string; localId?: string | null; name?: string | null; email?: string | null }>(
     (clientsResult.data ?? []).map((row: Record<string, unknown>) => [
       String(row.id),
       {
         id: String(row.id),
+        localId: typeof row.local_id === "string" ? row.local_id : null,
         name: typeof row.name === "string" ? row.name : null,
         email: typeof row.email === "string" ? row.email : null,
       },
     ]),
   );
-  const selectedClient = clientId ? clientMap.get(clientId) ?? null : null;
+  const selectedClient = clientId
+    ? clientMap.get(clientId)
+      ?? [...clientMap.values()].find((client) => client.localId === clientId)
+      ?? null
+    : null;
   const selectedClientName = resolveClientName(selectedClient);
   console.log("GOOGLE SYNC SELECTED CLIENT", { clientId: clientId ?? null, clientName: selectedClientName });
   console.log("[google-sync] clientId:", clientId ?? null);
@@ -667,7 +672,7 @@ function selectPrograms(table: "points_programs" | "miles_programs", userId: str
     .eq("user_id", userId);
 
   if (clientId) {
-    query = query.eq("client_id", clientId);
+    query = query.or(`client_id.eq.${clientId},local_id.eq.${clientId}`);
   }
 
   return query;
